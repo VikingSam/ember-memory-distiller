@@ -9,7 +9,7 @@ ember-memory-distiller directory. Nothing is automatically installed on your ser
 1. Once published, download and unpack outside `memory/`, for example at
    `/home/ubuntu/ember-memory-distiller`. No server shell access is needed by Codex.
 2. Run `python3 -B -m unittest discover -s tests -v` from the unpacked directory.
-   All 20 tests pass locally, including restoration of the exact patch target.
+   All 21 tests pass locally, including restoration of the exact patch target.
 3. For a READ-ONLY first diagnostic, run:
    `python3 -B scripts/inspect_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw`
    Return the JSON. It contains public-code filenames, hashes, and match flags.

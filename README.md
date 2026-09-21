@@ -266,3 +266,20 @@ code edits. It restores the original bytes, marks the manifest restored, and
 preserves the replaced patched file under
 `openclaw/.ember-distiller/restore-archives/ID/dist/engine-storage-MMPynmDa.js`.
 Keep backups outside node_modules as well before any reinstall.
+
+## Diagnostic follow-up
+
+The public CLI catches the failure in `dist/cli.runtime-Bmy6tBkC.js:708` and
+prints its message. An uncaught-exception handler or larger stack limit cannot
+recover a stack discarded by that catch. The preload in
+`scripts/sqlite-diagnostic.cjs` intercepts `DatabaseSync.prepare` before it.
+It emits only a SQL hash, approximate placeholder count, and basename:line:column
+callsites. It does not print SQL or bound values. The added regression verifies
+capture even when an outer handler catches the error, including paths with spaces.
+
+The standalone updated preload is also available at `scripts/sqlite-diagnostic.cjs`
+in the repository. A synthetic `:memory:` database can test it without opening
+OpenClaw data. Instrumenting a real reindex still writes the index and is a
+separate step; do not launch overlapping reindexes. Existing processes cannot
+acquire a new NODE_OPTIONS preload after launch. Slow transaction warnings alone
+do not identify the oversized statement.
