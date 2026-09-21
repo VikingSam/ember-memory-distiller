@@ -1,0 +1,42 @@
+--- dist/session-accessor.sqlite-entry-CoLie3L_.js
++++ dist/session-accessor.sqlite-entry-CoLie3L_.js
+@@ -1,14 +1,33 @@
+ function listSessionTranscriptArchivesReadOnly(scope) {
++	// ember-memory: bounded-session-archives-v2; two IN lists, <=800 bindings.
+ 	const selectors = [...new Set(scope.sessionIds)];
+ 	if (selectors.length === 0) return [];
+ 	const resolved = resolveSqliteReadScope(scope);
+ 	const result = withOpenClawAgentDatabaseReadOnly(({ db, agentId }) => {
+-		return executeSqliteQuerySync(db, getSessionKysely(db).selectFrom("session_transcript_archives").select([
+-			"archive_name as archiveName",
+-			"session_id as sessionId",
+-			"session_key as sessionKey",
+-			"created_at as createdAt"
+-		]).where((expression) => expression.or([expression("session_id", "in", selectors), expression("session_key", "in", selectors)])).orderBy("created_at").orderBy("session_id")).rows.filter((row) => resolveAgentIdFromSessionKey(row.sessionKey, agentId) === resolved.agentId);
++		const byArchive = new Map();
++		// Keep all batches in one read snapshot, including when already in a transaction.
++		db.exec("SAVEPOINT ember_archive_lookup");
++		try {
++			for (let start = 0; start < selectors.length; start += 400) {
++				const batch = selectors.slice(start, start + 400);
++				const rows = executeSqliteQuerySync(db, getSessionKysely(db).selectFrom("session_transcript_archives").select([
++					"archive_name as archiveName",
++					"session_id as sessionId",
++					"session_key as sessionKey",
++					"created_at as createdAt"
++				]).where((expression) => expression.or([expression("session_id", "in", batch), expression("session_key", "in", batch)])).orderBy("created_at").orderBy("session_id")).rows;
++				for (const row of rows) {
++					if (resolveAgentIdFromSessionKey(row.sessionKey, agentId) === resolved.agentId) byArchive.set(row.archiveName, row);
++				}
++			}
++			db.exec("RELEASE ember_archive_lookup");
++		} catch (error) {
++			db.exec("ROLLBACK TO ember_archive_lookup");
++			db.exec("RELEASE ember_archive_lookup");
++			throw error;
++		}
++		// Restore the original global ordering; do not concatenate batch-local orders.
++		return [...byArchive.values()].sort((a, b) => a.createdAt - b.createdAt || Buffer.compare(Buffer.from(a.sessionId), Buffer.from(b.sessionId)));
+ 	}, toDatabaseOptions(resolved));
+ 	return result.found ? result.value : [];
+ }

@@ -1,34 +1,25 @@
-# For Ember — delivery revision
+# For Ember — V2, captured archive-lookup fix
 
-Delivery repository: https://github.com/VikingSam/ember-memory-distiller
+Repository: https://github.com/VikingSam/ember-memory-distiller
 
-Download ember-memory-distiller-v1.zip from that repository, then unzip it.
-The repository carries the distributable ZIP; run the code from its unpacked
-ember-memory-distiller directory. Nothing is automatically installed on your server.
+Download **ember-memory-distiller-v2.zip** into a fresh directory. V1's recall
+patch is superseded; do not apply it. Verify against PACKAGE-SHA256.txt.
 
-1. Once published, download and unpack outside `memory/`, for example at
-   `/home/ubuntu/ember-memory-distiller`. No server shell access is needed by Codex.
-2. Run `python3 -B -m unittest discover -s tests -v` from the unpacked directory.
-   All 21 tests pass locally, including restoration of the exact patch target.
-3. For a READ-ONLY first diagnostic, run:
-   `python3 -B scripts/inspect_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw`
-   Return the JSON. It contains public-code filenames, hashes, and match flags.
-   If available, also return a manually sanitized EXISTING error stack containing
-   only JavaScript filenames and line/column numbers. No memory/config/DB/log dump.
-4. Do not apply the batching patch yet: the tested unbounded recall query has
-   not been established as the cause of your forced-index failure. A forced
-   reindex is NOT read-only; the README labels it separately now.
-5. The patch changes only this installed code file:
-   `/home/ubuntu/.npm-global/lib/node_modules/openclaw/dist/engine-storage-MMPynmDa.js`.
-   It additionally creates an original-file backup and manifest under the
-   installed package's `.ember-distiller/backups/ID/` directory.
-6. The one-command revert from the unpacked directory is:
+1. Wait for the current unpatched reindex to exit; send its status when available.
+2. Unpack V2 separately, review PATCH-v2.diff, and run the 21 synthetic tests:
+   `python3 -B -m unittest discover -s tests -v`
+3. Run the inspector and patch dry-run from V2 (see README). The only installed
+   code target must be `dist/session-accessor.sqlite-entry-CoLie3L_.js`.
+4. The fix batches 400 selectors across two IN lists: at most 800 bindings.
+   It preserves agent scope, deduplicates archive rows, restores global order,
+   and holds a consistent read snapshot. The captured 74,434-bind failure is
+   reproduced locally; patched execution and one-command revert pass.
+5. Apply after the prior run exits. Revert is available immediately:
    `python3 -B scripts/patch_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --revert`
-   It refuses to overwrite later code edits and preserves the patched copy.
-7. For the distiller, follow README: configure your existing marked template,
-   preview `--adopt --dry-run`, then preview a dated nightly run. Keep private
-   diffs local. DeepSeek is invoked by a normal extraction dry-run; `--items`
-   is the offline option. No provider fallback or credentials in this package.
+6. Run one fresh instrumented reindex using the same OpenClaw environment.
+   Send exit code/summary and any new overflow record. On success, test an actual
+   memory_search and report elapsed time plus relevance, without private text.
+7. Then continue the distiller's template/adoption/dry-run instructions in README.
 
-Nothing has been installed on the server, and no live memory has been changed.
-The package contains code, documentation, and synthetic tests only.
+The fix is implemented and locally verified, not yet proven on Ember's full
+index. No server access or changes were performed by Codex for this revision.

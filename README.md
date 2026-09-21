@@ -1,4 +1,4 @@
-# Ember memory distiller — V1 review package
+# Ember memory distiller — V2 review package
 
 Built for Ember to run locally. No server installation, cron changes, reindex,
 provider call, or live memory changes were performed by this package's author.
@@ -11,23 +11,25 @@ only for the OpenClaw regression tests and diagnostic.
 - Distiller implemented and tested locally: DeepSeek v4 Pro JSON extraction,
   deterministic routing/writes, linked entity/project pages, ceilings, whole-item
   demotion, backups, dry-run, same-date idempotence, restore, and change logs.
-- Found a real unbounded `readMemoryRecallMetadata` query in the public
-  `openclaw@2026.8.1` npm tarball. A version- and code-matched patch batches it at
-  400 IDs. It is **not yet established as Ember's indexing failure**. The public
-  package already batches embedding-cache reads at 400 hashes, cache writes at
-  seven bindings, and chunk writes individually. Do not call JOB 1 resolved yet.
-- A synthetic regression feeds the exact original/patched JavaScript function
-  18,918 IDs through a query-builder bridge, then runs the resulting batches on
-  real SQLite with its variable limit set to 999. Original fails; patched reads
-  all 18,918 rows. This is a function-level reproduction, not a full OpenClaw
-  CLI reindex or a live Voyage benchmark.
-- Live DeepSeek credentials/config shape, real transcript naming, indexing
-  failure callsite, and sub-five-second `memory_search` remain to be validated
+- JOB 1's captured stack identifies `listSessionTranscriptArchivesReadOnly` in
+  `dist/session-accessor.sqlite-entry-CoLie3L_.js`. Two unbounded IN lists produce
+  74,434 bindings for 37,217 unique selectors. V2 batches 400 selectors per query
+  (800 bindings), deduplicates by unique archive name, restores global ordering,
+  preserves agent filtering, and holds one read snapshot using a savepoint.
+- The earlier memory-recall patch was not the captured failure and is superseded.
+  Do not apply the V1 patch. V2 does not modify that recall bundle.
+- The 21-test suite includes the original failure on real in-memory SQLite at
+  74,434 binds, patched query execution under an additional 999-binding guard,
+  result/order equivalence, cross-batch duplicates, agent filtering, empty and
+  missing databases, nested transactions, failure recovery, and query-only mode.
+  Patch apply/revert and JS syntax were also checked on the public package locally.
+- Live DeepSeek credentials/config shape, real transcript naming, post-patch indexing
+  completion, and sub-five-second `memory_search` remain to be validated
   by Ember. No embeddings provider is changed.
 
 ## Download
 
-Download [ember-memory-distiller-v1.zip](https://github.com/VikingSam/ember-memory-distiller/raw/refs/heads/main/ember-memory-distiller-v1.zip)
+Download [ember-memory-distiller-v2.zip](https://github.com/VikingSam/ember-memory-distiller/raw/refs/heads/main/ember-memory-distiller-v2.zip)
 and unzip it into a separate working directory. This repository distributes the
 complete source/tests as a ZIP. Read `EMBER-HANDOFF.md` first. Nothing installs
 itself or contacts Ember's server merely by downloading.
@@ -182,104 +184,63 @@ an existing local alert mechanism enabled so extraction failures are visible.
 
 Human-readable change logs are `memory/distill-log-YYYY-MM-DD.md`.
 
-## JOB 1: diagnose the actual indexing failure first
+## JOB 1: V2 patch for the captured archive lookup overflow
 
-Start with this strictly read-only inspection. It reads installed public code
-and package metadata only, never config, memory, logs, databases, or transcripts.
-Return its JSON report. This confirms whether Ember has the same code as the
-public package; it cannot by itself identify the runtime failure.
+The current unpatched reindex must exit before applying this patch. No running
+process is stopped or restarted by the package. Review `PATCH-v2.diff` first.
+From the freshly unpacked V2 directory:
 
 ```sh
 python3 -B scripts/inspect_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw
-```
-
-To identify the failure without rerunning indexing, also return any **already
-captured, manually sanitized** error stack with just JavaScript basenames and
-line/column numbers. Do not export unrestricted logs. If that stack does not
-exist, stop here: a new reproduction needs a separately agreed reindex.
-
-### Optional reproduction — NOT read-only
-
-The following command writes the index and may incur embedding costs. Do not
-run it as part of the read-only inspection above.
-
-Run this with Ember's existing profile/config environment, adding the preload
-only for this invocation. The diagnostic prints no SQL text or binding values;
-its own output is restricted to a SQL hash, placeholder count, and JS basenames
-with line numbers. OpenClaw's own output is separate and must be reviewed before
-sharing. Forced indexing can call Voyage and consume embedding credits, just as
-Ember's original reindex command does.
-
-```sh
-NODE_OPTIONS="${NODE_OPTIONS:-} --require=/home/ubuntu/ember-memory-distiller/scripts/sqlite-diagnostic.cjs" openclaw --profile ember memory index --force --agent main
-```
-
-Return only the `SQLITE_BIND_OVERFLOW` diagnostic record first. Do not send
-memory databases, transcripts, config files, keys, or whole unrestricted logs.
-If no diagnostic appears, report that fact and a sanitized stack trace; the
-failure may use a different SQLite implementation or process.
-
-The confirmed recall-query patch is optional pending the callsite result:
-
-```sh
 python3 -B scripts/patch_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --dry-run
+```
+
+The sole modified installed code file is:
+
+`/home/ubuntu/.npm-global/lib/node_modules/openclaw/dist/session-accessor.sqlite-entry-CoLie3L_.js`
+
+Additional apply writes under that installed package are only the original
+backup `.ember-distiller/backups/ID/0` and its `manifest.json` (plus transient
+atomic-write files). No memory, database, configuration, provider, cron, or
+service changes are made by the patch script. Because the package is shared,
+new Blade processes loading this file also receive the bounded lookup.
+
+After the existing run exits and the dry-run shows exactly that target:
+
+```sh
 python3 -B scripts/patch_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw
 ```
 
-**This patch lives in node_modules.** Re-run the same script after a reinstall of
-2026.8.1. It is idempotent, backs up code before writing, and refuses an unknown
-version or changed function. It does not silently patch future releases or
-restart agents. A shared installation may serve Blade too: the change affects
-new processes loading that installation. Coordinate locally before applying.
-Restore using `--package-dir ... --restore BACKUP_ID`. npm reinstall may remove
-backups inside the old package directory, so copy that backup directory outside
-node_modules if rollback across reinstall is required.
-
-JOB 1 acceptance still requires a successful full index and a real Ember
-`memory_search` result in under five seconds. Timing an isolated SQL query or
-seeing “ready” is not that proof. Capture local elapsed time plus result count;
-keep the private result text on the server.
-
-## Exact patch footprint and pre-agreed rollback
-
-The patch now accepts only this installed code target:
-
-`/home/ubuntu/.npm-global/lib/node_modules/openclaw/dist/engine-storage-MMPynmDa.js`
-
-Its only additional durable writes on apply are:
-
-- `openclaw/.ember-distiller/backups/ID/0` — original code bytes
-- `openclaw/.ember-distiller/backups/ID/manifest.json` — hashes and commit status
-
-It does not modify package.json, memory files, databases, config, credentials,
-Voyage settings, cron, or services. Temporary sibling files are used for atomic
-replacement. A different hashed filename is rejected rather than guessed.
-
-One-command revert, from the unpacked package directory:
+One-command revert, available before apply:
 
 ```sh
 python3 -B scripts/patch_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --revert
 ```
 
-Revert selects the latest active backup for this exact target and rejects later
-code edits. It restores the original bytes, marks the manifest restored, and
-preserves the replaced patched file under
-`openclaw/.ember-distiller/restore-archives/ID/dist/engine-storage-MMPynmDa.js`.
-Keep backups outside node_modules as well before any reinstall.
+Revert restores the latest active backup for the V2 target and refuses to
+overwrite later code edits. It keeps the patched copy in
+`.ember-distiller/restore-archives/ID/dist/session-accessor.sqlite-entry-CoLie3L_.js`.
+An explicit older backup can instead be selected with `--restore BACKUP_ID`.
 
-## Diagnostic follow-up
+**The fix lives in node_modules.** Re-run V2's patch script after reinstalling
+2026.8.1. Exact version/function matching rejects unknown code; repeated apply
+is a no-op. Copy backups outside node_modules before a reinstall if needed.
 
-The public CLI catches the failure in `dist/cli.runtime-Bmy6tBkC.js:708` and
-prints its message. An uncaught-exception handler or larger stack limit cannot
-recover a stack discarded by that catch. The preload in
-`scripts/sqlite-diagnostic.cjs` intercepts `DatabaseSync.prepare` before it.
-It emits only a SQL hash, approximate placeholder count, and basename:line:column
-callsites. It does not print SQL or bound values. The added regression verifies
-capture even when an outer handler catches the error, including paths with spaces.
+For validation, use the same working OpenClaw profile/environment as the
+captured failure. Start one fresh reindex with V2's preload after the prior run
+has exited. This command writes the index and uses the existing embedding setup:
 
-The standalone updated preload is also available at `scripts/sqlite-diagnostic.cjs`
-in the repository. A synthetic `:memory:` database can test it without opening
-OpenClaw data. Instrumenting a real reindex still writes the index and is a
-separate step; do not launch overlapping reindexes. Existing processes cannot
-acquire a new NODE_OPTIONS preload after launch. Slow transaction warnings alone
-do not identify the oversized statement.
+```sh
+NODE_OPTIONS="${NODE_OPTIONS:-} --require=$PWD/scripts/sqlite-diagnostic.cjs" openclaw memory index --force --agent main
+```
+
+Return exit code, summary, and any `SQLITE_BIND_OVERFLOW` records. A subsequent
+failure may expose another oversized query; this patch targets the captured one
+only. A clean index must be followed by one real `memory_search`: report elapsed
+time and relevance without sharing private result text. Under five seconds with
+relevant results is the acceptance target, not yet established by local tests.
+
+The diagnostic captures `DatabaseSync.prepare` before the CLI message-only catch
+at `cli.runtime-Bmy6tBkC.js:708`. It emits no SQL or values, only a hash, approximate
+placeholder count, and sanitized basename/line/column callsites. Slow transaction
+warnings alone are not a diagnosis.
