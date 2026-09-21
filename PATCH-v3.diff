@@ -1,0 +1,30 @@
+--- dist/memory-entry-origins-DHPCnUGh.js
++++ dist/memory-entry-origins-DHPCnUGh.js
+@@ -1,10 +1,24 @@
+ function listMemorySessionTombstones(params) {
++	// ember-memory: bounded-session-tombstones-v3; <=401 bindings including agent.
+ 	if (params.sessionIds?.length === 0) return [];
++	const selectors = params.sessionIds ? [...new Set(params.sessionIds)] : void 0;
+ 	const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
+ 		if (!ensuredTombstoneDatabases.has(db) && !tableExists(db, "memory_session_tombstones")) return [];
+-		let query = getNodeSqliteKysely(db).selectFrom("memory_session_tombstones").selectAll().where("agent_id", "=", params.agentId);
+-		if (params.sessionIds) query = query.where("session_id", "in", params.sessionIds);
+-		return executeSqliteQuerySync(db, query.orderBy("session_id", "asc")).rows.map((row) => ({
++		const rowsBySession = new Map();
++		db.exec("SAVEPOINT ember_tombstone_lookup");
++		try {
++			for (let start = 0; start < (selectors?.length ?? 1); start += 400) {
++				let query = getNodeSqliteKysely(db).selectFrom("memory_session_tombstones").selectAll().where("agent_id", "=", params.agentId);
++				if (selectors) query = query.where("session_id", "in", selectors.slice(start, start + 400));
++				for (const row of executeSqliteQuerySync(db, query.orderBy("session_id", "asc")).rows) rowsBySession.set(row.session_id, row);
++			}
++			db.exec("RELEASE ember_tombstone_lookup");
++		} catch (error) {
++			db.exec("ROLLBACK TO ember_tombstone_lookup");
++			db.exec("RELEASE ember_tombstone_lookup");
++			throw error;
++		}
++		return [...rowsBySession.values()].sort((a, b) => Buffer.compare(Buffer.from(a.session_id), Buffer.from(b.session_id))).map((row) => ({
+ 			sessionId: row.session_id,
+ 			agentId: row.agent_id,
+ 			reason: row.reason,

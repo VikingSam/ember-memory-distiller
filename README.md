@@ -1,4 +1,4 @@
-# Ember memory distiller — V2 review package
+# Ember memory distiller — V3 review package
 
 Built for Ember to run locally. No server installation, cron changes, reindex,
 provider call, or live memory changes were performed by this package's author.
@@ -6,7 +6,58 @@ The package contains code and synthetic tests only; no private memory samples.
 Python 3.10+ on Linux/macOS. No third-party Python dependencies. Node is needed
 only for the OpenClaw regression tests and diagnostic.
 
-## Current delivery status
+## V3: second captured overflow
+
+V2 removed the archive-lookup callsite from Ember's reported failure. The next
+captured overflow is `listMemorySessionTombstones` at
+`dist/memory-entry-origins-DHPCnUGh.js:170–174`: one session-ID IN list plus one
+agent binding, giving 37,707 parameters. **Not** two IN lists, and **not** a file
+under `dist/extensions/memory-core/`.
+
+V3 adds a separate `scripts/patch_tombstones.py`. Keep V2 applied. V3 changes only
+`dist/memory-entry-origins-DHPCnUGh.js`, batching 400 unique IDs plus the agent
+filter (401 binds). It preserves all-agent scoping, absent-versus-empty ID-list
+semantics, missing-table/database behavior, global ordering, and a consistent
+read snapshot. Its revert touches only V3's target and leaves V2 installed.
+
+All 23 local tests pass. A real SQLite regression reproduces 37,707 binds before
+the fix, executes patched queries with an additional 999-variable guard, and
+checks result equivalence, Unicode ordering, duplicate IDs, agent isolation,
+query-only mode, and nested/failing transactions. This is not live completion.
+
+Wait for the current run to exit. From freshly unpacked V3:
+
+```sh
+python3 -B scripts/inspect_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw
+python3 -B scripts/patch_tombstones.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --dry-run
+python3 -B scripts/patch_tombstones.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw
+```
+
+Review `PATCH-v3.diff` first. Expected changed_files is exactly
+`["dist/memory-entry-origins-DHPCnUGh.js"]`. Additional writes are the original
+code backup and manifest in `.ember-distiller/backups/ID/` under node_modules.
+It does not alter memory files, databases, config, or services. Atomic writes
+use transient sibling files. The shared installation affects future processes
+loading this module, including other agents that use it.
+
+One-command V3-only revert:
+
+```sh
+python3 -B scripts/patch_tombstones.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --revert
+```
+
+Revert preserves the replaced code in `.ember-distiller/restore-archives/ID/`
+and refuses to overwrite later changes. On reinstall of 2026.8.1, reapply BOTH
+`patch_openclaw.py` (V2) and `patch_tombstones.py` (V3). Exact-code/version guards
+reject unknown releases. For a fresh install, apply V2 before V3. V1 is obsolete.
+
+After applying, start one fresh instrumented reindex using the existing profile
+and the command below in the V2 validation section. Return exit code, summary,
+and any new overflow record. No changes are injected into an already-running
+process. Clean indexing and relevant memory_search under five seconds remain
+the live acceptance checks.
+
+## V2 background and distiller status
 
 - Distiller implemented and tested locally: DeepSeek v4 Pro JSON extraction,
   deterministic routing/writes, linked entity/project pages, ceilings, whole-item
@@ -18,7 +69,7 @@ only for the OpenClaw regression tests and diagnostic.
   preserves agent filtering, and holds one read snapshot using a savepoint.
 - The earlier memory-recall patch was not the captured failure and is superseded.
   Do not apply the V1 patch. V2 does not modify that recall bundle.
-- The 21-test suite includes the original failure on real in-memory SQLite at
+- The archive regression includes the original failure on real in-memory SQLite at
   74,434 binds, patched query execution under an additional 999-binding guard,
   result/order equivalence, cross-batch duplicates, agent filtering, empty and
   missing databases, nested transactions, failure recovery, and query-only mode.
@@ -29,7 +80,7 @@ only for the OpenClaw regression tests and diagnostic.
 
 ## Download
 
-Download [ember-memory-distiller-v2.zip](https://github.com/VikingSam/ember-memory-distiller/raw/refs/heads/main/ember-memory-distiller-v2.zip)
+Download [ember-memory-distiller-v3.zip](https://github.com/VikingSam/ember-memory-distiller/raw/refs/heads/main/ember-memory-distiller-v3.zip)
 and unzip it into a separate working directory. This repository distributes the
 complete source/tests as a ZIP. Read `EMBER-HANDOFF.md` first. Nothing installs
 itself or contacts Ember's server merely by downloading.
@@ -186,7 +237,7 @@ Human-readable change logs are `memory/distill-log-YYYY-MM-DD.md`.
 
 ## JOB 1: V2 patch for the captured archive lookup overflow
 
-The current unpatched reindex must exit before applying this patch. No running
+Any current reindex must exit before applying this patch. No running
 process is stopped or restarted by the package. Review `PATCH-v2.diff` first.
 From the freshly unpacked V2 directory:
 

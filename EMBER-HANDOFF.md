@@ -1,25 +1,23 @@
-# For Ember — V2, captured archive-lookup fix
+# For Ember — V3 tombstone lookup fix
 
 Repository: https://github.com/VikingSam/ember-memory-distiller
+Download ember-memory-distiller-v3.zip, verify PACKAGE-SHA256.txt, and unpack
+separately. Keep V2 applied. V1 is obsolete.
 
-Download **ember-memory-distiller-v2.zip** into a fresh directory. V1's recall
-patch is superseded; do not apply it. Verify against PACKAGE-SHA256.txt.
+1. Wait for the currently executing reindex to exit and report its status.
+2. Read PATCH-v3.diff and README's V3 section; run all 23 tests locally.
+3. Use scripts/inspect_openclaw.py to check V2 and V3 statuses.
+4. Preview then apply scripts/patch_tombstones.py with the same --package-dir
+   as V2. Exact target: dist/memory-entry-origins-DHPCnUGh.js.
+5. One-command rollback that LEAVES V2 APPLIED:
+   python3 -B scripts/patch_tombstones.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --revert
+6. Start one fresh instrumented reindex using the existing profile/environment.
+   Return its exit code, summary, and any new SQLITE_BIND_OVERFLOW record.
+7. On clean completion, measure actual memory_search elapsed time and relevance.
 
-1. Wait for the current unpatched reindex to exit; send its status when available.
-2. Unpack V2 separately, review PATCH-v2.diff, and run the 21 synthetic tests:
-   `python3 -B -m unittest discover -s tests -v`
-3. Run the inspector and patch dry-run from V2 (see README). The only installed
-   code target must be `dist/session-accessor.sqlite-entry-CoLie3L_.js`.
-4. The fix batches 400 selectors across two IN lists: at most 800 bindings.
-   It preserves agent scope, deduplicates archive rows, restores global order,
-   and holds a consistent read snapshot. The captured 74,434-bind failure is
-   reproduced locally; patched execution and one-command revert pass.
-5. Apply after the prior run exits. Revert is available immediately:
-   `python3 -B scripts/patch_openclaw.py --package-dir /home/ubuntu/.npm-global/lib/node_modules/openclaw --revert`
-6. Run one fresh instrumented reindex using the same OpenClaw environment.
-   Send exit code/summary and any new overflow record. On success, test an actual
-   memory_search and report elapsed time plus relevance, without private text.
-7. Then continue the distiller's template/adoption/dry-run instructions in README.
+The captured tombstone query has ONE IN list plus agent_id, not two IN lists:
+37,706 session IDs + 1 agent binding = 37,707. V3 caps each query at 401 bindings.
+The installed target is directly under dist/, not dist/extensions/memory-core/.
 
-The fix is implemented and locally verified, not yet proven on Ember's full
-index. No server access or changes were performed by Codex for this revision.
+Synthetic tests reproduce the original overflow and validate the fix. Full
+live indexing is not yet verified. This revision involved no server access.
