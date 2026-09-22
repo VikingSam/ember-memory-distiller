@@ -1,0 +1,11 @@
+--- a/dist/extensions/memory-core/manager-runtime.js
++++ b/dist/extensions/memory-core/manager-runtime.js
+@@ -5643,7 +5643,7 @@
+ 			if (repairedIndexIdentity.status === "mismatched" && !embeddingBootstrapKeywordOnly && await this.adoptPublishedFallbackProviderIfMatched()) repairedIndexIdentity = this.refreshIndexIdentityDirty({ providerKeyKnown: this.providerInitialized });
+ 			if (repairedIndexIdentity.status !== "valid") return [];
+ 			const backgroundSearchSync = startAsyncSearchSync({
+-				enabled: (this.settings.sync.onSearch || sessionStartSync) && (this.purpose === "default" || this.purpose === "cli"),
++				enabled: false, // ember-memory v5: retrieval uses published index; update listeners and explicit indexing remain active.
+ 				dirty: this.dirty,
+ 				sessionsDirty: this.sessionsDirty,
+ 				sync: async (params) => await this.syncPublishedIndexInBackground(params),
