@@ -1,0 +1,46 @@
+--- a/dist/extensions/memory-core/manager-runtime.js
++++ b/dist/extensions/memory-core/manager-runtime.js
+@@ -2313,6 +2313,17 @@
+ 		}
+ 	}
+ 	async runSyncPass(params) {
++		// Incremental maintenance mutates live tables: exclude generation readers.
++		if (params?.emberSearchMaintenanceV4 && !params.emberGenerationLeaseHeldV4) {
++			const outcome = await withMemoryWorkspaceLock(this.workspaceDir, async () =>
++				await withMemoryIndexPublishGeneration(this.settings.store.databasePath, async () =>
++					await this.runSyncPass({ ...params, emberGenerationLeaseHeldV4: true })));
++			// Release the lease before the full-rebuild path acquires its own lease.
++			if (outcome === "ember-full-reindex-v4") await this.runSyncPass({
++				...params, emberSearchMaintenanceV4: false, emberGenerationLeaseHeldV4: false, force: true
++			});
++			return;
++		}
+ 		this.assertFtsOnlySyncAllowed();
+ 		const syncProvider = this.syncProviderGeneration ? this.syncProviderGeneration.provider : this.provider;
+ 		const progress = params?.progress ? this.createSyncProgress(params.progress) : void 0;
+@@ -2362,10 +2373,11 @@
+ 		const hasOnlyFtsChunks = indexIdentity.status === "missing" && hasIndexedChunks && syncProvider === null && Boolean(this.settings.provider) && this.settings.provider !== "none" && !this.hasSemanticChunks();
+ 		const canRebuildMissingIdentity = syncProvider !== null || !this.settings.provider || this.settings.provider === "none" || hasOnlyFtsChunks;
+ 		const needsMissingIdentityReindex = indexIdentity.status === "missing" && !hasTargetArchiveFiles && canRebuildMissingIdentity;
+-		const needsExplicitIdentityReindex = params?.reason === "cli" && indexIdentity.status !== "valid" && !hasTargetArchiveFiles;
++		const needsExplicitIdentityReindex = (params?.reason === "cli" || params?.emberSearchMaintenanceV4) && indexIdentity.status !== "valid" && !hasTargetArchiveFiles;
+ 		const needsChunkingVersionReindex = meta !== null && meta.chunkingVersion !== 3 && !hasTargetArchiveFiles;
+ 		const canRunRetryFullReindex = indexIdentity.status !== "missing" || needsInitialIndex || canRebuildMissingIdentity;
+ 		const needsFullReindex = params?.force && !hasTargetArchiveFiles || needsInitialIndex || needsMissingIdentityReindex || needsExplicitIdentityReindex || needsChunkingVersionReindex || this.memoryFullRetryDirty && canRunRetryFullReindex || this.sessionsFullRetryDirty && indexIdentity.status !== "valid" && canRunRetryFullReindex;
++		if (needsFullReindex && params?.emberGenerationLeaseHeldV4) return "ember-full-reindex-v4";
+ 		const needsFullSessionReindex = needsFullReindex || this.sessionsFullRetryDirty;
+ 		if (indexIdentity.status !== "valid" && !needsFullReindex) {
+ 			this.dirty = true;
+@@ -4202,9 +4214,11 @@
+ 	let maintenanceError;
+ 	let incompleteReason;
+ 	try {
++		// ember-memory v4: transfer pending work, not an unconditional full rebuild.
++		manager.restoreReindexRetryState(dirtyGeneration);
+ 		await manager.sync({
+ 			reason: params.reason,
+-			force: true
++			emberSearchMaintenanceV4: true
+ 		});
+ 		const status = manager.status();
+ 		if (status.dirty === true) {
