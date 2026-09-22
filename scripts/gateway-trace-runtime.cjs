@@ -3,6 +3,7 @@
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { performance, monitorEventLoopDelay } = require('node:perf_hooks');
 const path = require('node:path');
+const {realpathSync} = require('node:fs');
 const { fileURLToPath } = require('node:url');
 const inspector = require('node:inspector');
 const PHASES = new Set(['manager_get','search','provider_init','sync_admitted','background_maintenance','sync_pass','startup_catchup','session_update','memory_files','session_files','prepare_entry','write_chunks','batch_embedding','query_embedding','provider_probe','bootstrap_probe','embedding_request','retry_sleep','fts','vector','generation_read_wait','generation_write_wait','generation_write_hold','workspace_operation','workspace_hold']);
@@ -28,26 +29,49 @@ function errorClass(err) {
 function safeProfile(profile, packageDir) {
   const counts = new Map();
   for (const id of profile.samples ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const nodes = new Map((profile.nodes ?? []).map(node => [node.id,node]));
+  const parents = new Map();
+  for (const node of nodes.values()) for (const child of node.children ?? []) parents.set(child,node.id);
   const rows = new Map();
-  const prefix = path.resolve(packageDir, 'dist') + path.sep;
-  for (const node of profile.nodes ?? []) {
-    const samples = counts.get(node.id) ?? 0;
-    if (!samples) continue;
-    const f = node.callFrame ?? {};
-    let file = 'outside-openclaw', line = 0;
+  let distRoot=path.resolve(packageDir,'dist');
+  try {distRoot=realpathSync(distRoot);} catch {}
+  const prefix=distRoot+path.sep;
+  function publicFrame(node) {
+    const f = node?.callFrame ?? {};
     try {
       const url = f.url ?? '';
       const p = url.startsWith('file:') ? fileURLToPath(url) : url;
       if (path.isAbsolute(p) && path.resolve(p).startsWith(prefix)) {
         const base = path.basename(p);
-        if (/^[A-Za-z0-9_.-]+\.m?js$/.test(base)) { file = base; line = Math.max(0, (f.lineNumber ?? -1) + 1); }
-      } else if (['(idle)','(garbage collector)','(program)'].includes(f.functionName)) file = f.functionName;
+        if (/^[A-Za-z0-9_.-]+\.[cm]?js$/.test(base)) return {file:base,line:Math.max(0,(f.lineNumber ?? -1)+1)};
+      }
     } catch {}
-    const key = file + ':' + line;
-    const row = rows.get(key) ?? {file,line,samples:0};
-    row.samples += samples; rows.set(key,row);
+    return null;
   }
-  return [...rows.values()].sort((a,b) => b.samples-a.samples).slice(0,20);
+  for (const [id,samples] of counts) {
+    const node=nodes.get(id);
+    let frame=publicFrame(node), attribution='leaf';
+    if (!frame) {
+      const name=node?.callFrame?.functionName;
+      if (['(idle)','(garbage collector)','(program)'].includes(name)) frame={file:name,line:0};
+      else {
+        // Native/Node/dependency leaves may do all the work for a dist caller.
+        // Attribute each sample ONCE to its nearest public ancestor, never to
+        // every ancestor. Keep the attribution explicit; this is not leaf CPU.
+        let parent=parents.get(id);const visited=new Set([id]);
+        while (parent!==undefined && !visited.has(parent) && visited.size<512) {
+          visited.add(parent);frame=publicFrame(nodes.get(parent));
+          if(frame){attribution='openclaw_caller';break;}
+          parent=parents.get(parent);
+        }
+      }
+    }
+    if (!frame) {frame={file:'outside-openclaw',line:0};attribution='unattributed';}
+    const key=frame.file+':'+frame.line+':'+attribution;
+    const row=rows.get(key) ?? {...frame,attribution,samples:0};
+    row.samples+=samples;rows.set(key,row);
+  }
+  return [...rows.values()].sort((a,b)=>b.samples-a.samples).slice(0,20);
 }
 function createRuntime(options = {}) {
   const durationMs = options.durationMs ?? 180000;
@@ -102,7 +126,7 @@ function createRuntime(options = {}) {
     if (session) {
       try {
         const {profile}=await post('Profiler.stop');
-        emit({event:'cpu_samples',sample_interval_us:10000,frames:safeProfile(profile,options.packageDir),note:'exclusive_samples_not_lock_wait_time'},true);
+        emit({event:'cpu_samples',sample_interval_us:10000,frames:safeProfile(profile,options.packageDir),note:'each_sample_attributed_once_not_lock_wait_time'},true);
         await post('Profiler.disable');
       } catch {emit({event:'profiler_unavailable'},true);}
       finally {session.disconnect();session=null;}

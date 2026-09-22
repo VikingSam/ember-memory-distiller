@@ -2,9 +2,10 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import {realpathSync} from 'node:fs';
 export const EXPECTED='e522174564eed7c90b60c8ebff8536f40bc41f7938efb5535d9281ca7e5a70df';
 let target;
-export function initialize(data) {target=path.resolve(data.packageDir,'dist/extensions/memory-core/manager-runtime.js');}
+export function initialize(data) {target=realpathSync(path.resolve(data.packageDir,'dist/extensions/memory-core/manager-runtime.js'));}
 export function checkedTransform(source) {
   if (createHash('sha256').update(source).digest('hex')!==EXPECTED) throw new Error('Ember gateway trace: V5 hash mismatch');
   return instrument(source);

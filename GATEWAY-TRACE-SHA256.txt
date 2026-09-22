@@ -1,1 +1,1 @@
-ece2d43f4173b35f14d1332536fea3595494e8955d50466c585fca1038ec6ee6  ember-gateway-trace-v1.zip
+d72fcd51e6510df522d6851a7335ec7ca293da3865b7f909bf8b7e397dca98c5  ember-gateway-trace-v1.1.zip

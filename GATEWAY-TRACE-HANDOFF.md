@@ -1,4 +1,9 @@
-# Bounded gateway memory diagnostic v1
+# Bounded gateway memory diagnostic v1.1
+
+Use v1.1 instead of v1. This revision attributes native/Node CPU work to its
+nearest public package caller and canonicalizes symlinked package paths.
+A real local CPU-stall test covers this; capture scope and runtime remain the
+same.
 
 This is an observational diagnostic, not V6 and not a search fix. The goal is
 to distinguish background indexing, provider checks, search requests, lock
@@ -61,9 +66,9 @@ python3 -B -m unittest discover -s tests -p 'test_gateway*.py' -v
 python3 -B scripts/gateway_trace_service.py --check --unit "$TRACE_UNIT" --state-dir "$TRACE_STATE" --package-dir "$TRACE_PACKAGE"
 ```
 
-Eight packaged tests cover privacy, async parent correlation, error/result
+Nine packaged tests cover privacy, async parent correlation, error/result
 preservation, release on failure, capture expiry/cap, actual local CPU-profiler
-lifecycle, safe service scope, preservation of existing NODE_OPTIONS, journal export field filtering, and stage/remove drift protection without restarting.
+lifecycle, safe service scope, preservation of existing NODE_OPTIONS, journal export field filtering, stage/remove drift protection without restarting, and actual CPU-stall attribution through native Node calls.
 The complete transformed V5 module was separately syntax-checked locally.
 These are local tests, not live gateway proof.
 
@@ -144,11 +149,13 @@ missing records and current service responsiveness from passive evidence.
 - `workspace_operation` covers wait + body + release. `workspace_hold` begins
   inside the original callback. Reentrant scopes can overlap; don't sum them
   or call the outer interval pure waiting.
-- CPU samples attribute synchronous busy work while timers cannot run. Counts
-  are exclusive sampled stacks, NOT milliseconds or lock wait time. Native
-  work may be attributed to its JavaScript caller. Worker/subprocess CPU is
+- CPU samples attribute synchronous busy work while timers cannot run. Each sample is counted once, NOT once per ancestor. `leaf` means the
+  sampled frame itself; `openclaw_caller` means native/Node/dependency work
+  attributed to its nearest public dist ancestor; `unattributed` means no such
+  ancestor was found. Counts are NOT milliseconds or lock wait time. Worker/subprocess CPU is
   outside this profiler; missing samples are not proof those workers are idle.
-- CPU line numbers refer to the IN-MEMORY instrumented V5 module. Use
+- CPU line numbers identify function starts, not sampled instructions. They
+  refer to the IN-MEMORY instrumented V5 module. Use
   GATEWAY-TRACE.diff to map manager locations; other dist modules are unchanged.
 - No database query counters are included. A long async phase alone cannot
   establish that SQL was idle or a database transaction was held.

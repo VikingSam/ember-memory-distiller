@@ -30,11 +30,13 @@ def project(record):
             out[key] = value
         elif key == 'error_class' and isinstance(value, str) and (value in ERRORS or re.fullmatch(r'http_[45][0-9]{2}', value)):
             out[key] = value
+        elif key == 'attribution' and isinstance(value, str) and value in {'leaf','openclaw_caller','unattributed'}:
+            out[key] = value
         elif key == 'mode' and value == 'observe-v5':
             out[key] = value
-        elif key == 'note' and value == 'exclusive_samples_not_lock_wait_time':
+        elif key == 'note' and value == 'each_sample_attributed_once_not_lock_wait_time':
             out[key] = value
-        elif key == 'file' and isinstance(value, str) and (value in {'outside-openclaw','(idle)','(garbage collector)','(program)'} or re.fullmatch(r'[A-Za-z0-9_.-]+\.m?js', value)):
+        elif key == 'file' and isinstance(value, str) and (value in {'outside-openclaw','(idle)','(garbage collector)','(program)'} or re.fullmatch(r'[A-Za-z0-9_.-]+\.[cm]?js', value)):
             out[key] = value
         elif key == 'active_ids' and isinstance(value, list):
             out[key] = [v for v in value[:256] if type(v) is int]

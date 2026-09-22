@@ -50,6 +50,15 @@ const frames=safeProfile({samples:[1,2,2,3],nodes:[
 ]},'/pkg');
 assert(!JSON.stringify(frames).includes('PRIVATE'));
 assert(frames.some(x=>x.file==='manager-runtime.js'&&x.line===6));
+const native=safeProfile({samples:[3,3,2],nodes:[
+ {id:1,children:[2],callFrame:{url:'file:///pkg/dist/outer.js',lineNumber:1}},
+ {id:2,children:[3],callFrame:{url:'file:///pkg/dist/inner.js',lineNumber:10}},
+ {id:3,callFrame:{url:'node:internal/crypto',functionName:'PRIVATE_INTERNAL'}}
+]},'/pkg');
+assert.equal(native.reduce((n,r)=>n+r.samples,0),3);
+assert(native.some(r=>r.file==='inner.js'&&r.attribution==='openclaw_caller'&&r.samples===2));
+assert(!native.some(r=>r.file==='outer.js'));
+
 '''.replace('RUNTIME', json.dumps(str(ROOT / 'scripts/gateway-trace-runtime.cjs'))))
 
     def test_bounded_actual_profiler_lifecycle(self):
@@ -64,6 +73,30 @@ assert(rows.some(r=>r.event==='capture_end'));
 assert(rows.some(r=>r.event==='cpu_samples'||r.event==='profiler_unavailable'));
 const n=rows.length;await t.timed('search',async()=>true);assert.equal(rows.length,n);
 '''.replace('RUNTIME', json.dumps(str(ROOT / 'scripts/gateway-trace-runtime.cjs'))))
+
+    def test_real_cpu_stall_identifies_native_caller_without_private_frames(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package=Path(tmp);dist=package/'dist';dist.mkdir()
+            (dist/'fixture-hotspot.cjs').write_text("""
+const {performance}=require('node:perf_hooks');
+const {pbkdf2Sync}=require('node:crypto');
+exports.spin=function(){const end=performance.now()+250;while(performance.now()<end){};};
+exports.native=function(){return pbkdf2Sync('PRIVATE_SYNTHETIC','PRIVATE_SYNTHETIC',1000000,32,'sha256').length;};
+""")
+            self.node('''
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';const require=createRequire(import.meta.url);
+const {createRuntime}=require(RUNTIME);const hotspot=require(HOTSPOT);const rows=[];
+const t=createRuntime({packageDir:PACKAGE,durationMs:5000,sink:r=>rows.push(r)});
+await t.startCapture();
+await t.timed('session_update',()=>t.timed('session_files',async()=>{hotspot.spin();hotspot.native();}));
+await t.finish();
+const profile=rows.find(r=>r.event==='cpu_samples');assert(profile,'CPU profile unavailable');
+assert(profile.frames.some(r=>r.file==='fixture-hotspot.cjs'&&r.attribution==='openclaw_caller'&&r.samples>0));
+assert(rows.some(r=>r.event==='end'&&r.phase==='session_files'&&r.elapsed_ms>=250));
+assert(!JSON.stringify(rows).includes('PRIVATE'));
+assert(!JSON.stringify(profile).includes(PACKAGE));
+'''.replace('RUNTIME',json.dumps(str(ROOT/'scripts/gateway-trace-runtime.cjs'))).replace('HOTSPOT',json.dumps(str(dist/'fixture-hotspot.cjs'))).replace('PACKAGE',json.dumps(str(package))))
 
     def test_preload_scope_and_non_gateway_noop(self):
         hook=ROOT / 'scripts/gateway-trace-preload.cjs'
