@@ -1,9 +1,11 @@
-# Bounded gateway memory diagnostic v1.1
+# Bounded gateway memory diagnostic v1.2
 
-Use v1.1 instead of v1. This revision attributes native/Node CPU work to its
-nearest public package caller and canonicalizes symlinked package paths.
-A real local CPU-stall test covers this; capture scope and runtime remain the
-same.
+Use v1.2 instead of v1/v1.1. The recorder is unchanged from v1.1. Setup now
+supports services with EnvironmentFiles by inserting Node's --require into
+the existing ExecStart argv, instead of modifying NODE_OPTIONS. The helper
+reads typed systemd launch metadata, retains every original argument, and
+verifies the effective launch command after staging. No environment file is
+read, copied, reordered or changed. NODE_OPTIONS is left untouched.
 
 This is an observational diagnostic, not V6 and not a search fix. The goal is
 to distinguish background indexing, provider checks, search requests, lock
@@ -48,7 +50,7 @@ Extract outside the gateway's watched/indexed workspace into a persistent
 operator-owned directory. Supply the intended deployment identity LOCALLY.
 No server paths or unit names are provided by this public package.
 Read the five scripts, tests, and this handoff. Verify the archive checksum
-and the extracted SHA256SUMS. As the service-owning account, from that directory, set these shell variables
+and the extracted SHA256SUMS. As the service-owning account on Linux (systemctl and busctl required), from that directory, set these shell variables
 to the verified local values (the examples are placeholders, not commands
 ready to run):
 
@@ -66,17 +68,29 @@ python3 -B -m unittest discover -s tests -p 'test_gateway*.py' -v
 python3 -B scripts/gateway_trace_service.py --check --unit "$TRACE_UNIT" --state-dir "$TRACE_STATE" --package-dir "$TRACE_PACKAGE"
 ```
 
-Nine packaged tests cover privacy, async parent correlation, error/result
+Eleven packaged tests cover privacy, async parent correlation, error/result
 preservation, release on failure, capture expiry/cap, actual local CPU-profiler
-lifecycle, safe service scope, preservation of existing NODE_OPTIONS, journal export field filtering, stage/remove drift protection without restarting, and actual CPU-stall attribution through native Node calls.
+lifecycle, safe service scope, preservation of existing NODE_OPTIONS/environment files, journal export field
+filtering, stage/remove drift protection, typed launch metadata, automatic
+rollback on readback mismatch, and CPU-stall attribution through native calls.
 The complete transformed V5 module was separately syntax-checked locally.
 These are local tests, not live gateway proof.
 
-Preflight reads package files and systemd properties; it does not invoke
-OpenClaw or open the DB. It refuses an unexpected hash, service identity,
-inactive service, preexisting diagnostic, or EnvironmentFiles whose precedence
-would make blindly combining NODE_OPTIONS unsafe. If it refuses, report only
-the fixed refusal message. Do not work around it or paste environment values.
+Preflight reads package files, systemd properties and the live MainPID's
+process environment. From that environment it selects only the state-dir,
+service-unit and NODE_OPTIONS fields; nothing is exported. It does not read
+EnvironmentFiles or invoke OpenClaw or open the DB. NODE_OPTIONS is only
+checked for an already-installed diagnostic; its contents are never copied
+into the drop-in or output.
+
+Typed launch metadata is read using busctl --user --json=short and systemd's
+ExecStartEx property. Exactly one ordinary direct Node gateway command is
+supported. Shell wrappers, custom argv[0], special execution flags and dollar
+variable expansion are refused rather than reconstructed approximately.
+
+It also refuses unexpected hashes/identities, inactive services or existing
+diagnostics. If it refuses, send only the fixed refusal message. Never paste
+environment values or a full launch command containing private arguments.
 
 ## Activation — ONE coordinated restart of the explicitly approved unit
 
@@ -92,9 +106,18 @@ systemctl --user restart "$TRACE_UNIT"
 
 The sole service change is a new runtime drop-in:
 `/run/user/<uid>/systemd/user/<approved-unit>.d/90-ember-memory-trace-v1.conf`
-and its `.sha256` ownership record. It preserves existing service Environment
-NODE_OPTIONS and appends the preload. Other environment values are not copied
-or printed. The drop-in disappears on reboot. No other unit is touched.
+and its `.sha256` ownership record, both created with mode 0600. The helper
+resets and replaces ONLY ExecStart with the original Node command plus
+--require and the diagnostic path. It adds diagnostic scope variables.
+Existing Environment and EnvironmentFiles remain in effect unchanged;
+NODE_OPTIONS is not set, cleared or concatenated. No environment secrets are
+copied or printed. Original launch arguments are retained locally in the
+protected drop-in, so keep it private if the original command has private
+arguments. The drop-in disappears on reboot. No other unit is touched.
+
+After daemon-reload, the helper reads ExecStartEx back. If the resulting
+command is not the original command plus the intended preload, it removes
+its own override, reloads again, and reports failure without restarting.
 
 Read existing journal readiness and record the new gateway PID/invocation. Do
 not run OpenClaw status or a CLI search. Once ready, remove the drop-in now:
@@ -162,3 +185,13 @@ missing records and current service responsiveness from passive evidence.
 
 Checks for gateway retrieval and normal watcher additions/removals stay
 pending. This recording does not itself establish that memory is fixed.
+
+## API reference for local review
+
+The helper uses the typed ExecStartEx property, documented in the official
+systemd D-Bus interface, rather than parsing a shell command from human output:
+https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html
+Source form: https://github.com/systemd/systemd/blob/main/man/org.freedesktop.systemd1.xml
+No service has been restarted by local packaging/tests. The service tests use
+synthetic systemd responses; actual typed readback is checked on the target
+before any restart.

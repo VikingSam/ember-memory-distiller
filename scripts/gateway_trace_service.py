@@ -6,7 +6,6 @@ import json
 import os
 import re
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
@@ -25,21 +24,87 @@ def quote(value):
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
 
 
-def render(env, hook):
+def render(env, hook, executable, argv, flags):
     if env.get('OPENCLAW_STATE_DIR') != STATE or env.get('OPENCLAW_SYSTEMD_UNIT') != UNIT:
-        raise ValueError('Effective service Environment does not explicitly identify Ember; stop for review')
-    options = env.get('NODE_OPTIONS', '')
-    if 'gateway-trace-preload' in options:
+        raise ValueError('Live service environment does not identify the requested gateway')
+    if 'gateway-trace-preload' in env.get('NODE_OPTIONS', ''):
         raise ValueError('A gateway diagnostic preload is already configured')
-    # Node parses quoted NODE_OPTIONS paths. No shell is used.
+    if flags:
+        raise ValueError('ExecStart has special execution flags; stop for local review')
+    if not isinstance(executable, str) or not Path(executable).is_absolute() or Path(executable).name not in {'node', 'nodejs'}:
+        raise ValueError('Expected ExecStart to launch Node directly; stop for local review')
+    if not argv or argv[0] != executable or 'gateway' not in argv[1:]:
+        raise ValueError('ExecStart is not the expected direct Node gateway command')
     hook = str(hook)
-    if any(c in hook for c in '\r\n\0"\\'):
-        raise ValueError('Unsupported diagnostic path')
-    options = (options + ' --require="' + hook + '"').strip()
-    return (MARKER + '[Service]\nEnvironment=' + quote('NODE_OPTIONS=' + options) + '\nEnvironment="EMBER_GATEWAY_TRACE=1"\n'
+    if any(not isinstance(arg, str) or any(c in arg for c in '\r\n\0$') for arg in [hook, *argv]):
+        raise ValueError('ExecStart uses variable expansion or unsupported characters; stop for local review')
+    if any('gateway-trace-preload' in arg for arg in argv):
+        raise ValueError('A diagnostic preload is already in ExecStart')
+    traced_argv = [executable, '--require', hook, *argv[1:]]
+    # Override ONLY ExecStart plus diagnostic scope. Environment and
+    # EnvironmentFiles, including the next start's NODE_OPTIONS, stay intact.
+    return (MARKER + '[Service]\nExecStart=\nExecStart=' + ' '.join(quote(arg) for arg in traced_argv)
+            + '\nEnvironment="EMBER_GATEWAY_TRACE=1"\n'
             + ''.join('Environment=' + quote(key + '=' + value) + '\n' for key, value in {
                 'EMBER_TRACE_UNIT': UNIT, 'EMBER_TRACE_STATE_DIR': STATE,
                 'EMBER_TRACE_PACKAGE_DIR': str(PACKAGE)}.items()))
+
+
+def read_live_scope(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        raise RuntimeError('Service MainPID is unavailable')
+    raw = Path('/proc') / str(pid) / 'environ'
+    if raw.stat().st_uid != os.getuid():
+        raise RuntimeError('MainPID belongs to another account')
+    allowed = {b'OPENCLAW_STATE_DIR', b'OPENCLAW_SYSTEMD_UNIT', b'NODE_OPTIONS'}
+    selected = {}
+    for entry in raw.read_bytes().split(b'\0'):
+        key, sep, value = entry.partition(b'=')
+        if sep and key in allowed:
+            selected[key.decode()] = value.decode('utf-8', errors='strict')
+    return selected
+
+
+def bus(*args):
+    result = subprocess.run(['busctl', '--user', '--json=short', *args], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError('Could not read typed systemd launch metadata; nothing restarted')
+    try:
+        return json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise RuntimeError('Unrecognized systemd launch metadata; nothing restarted') from None
+
+
+def parse_exec_start(value):
+    if not isinstance(value, dict) or value.get('type') != 'a(sasasttttuii)':
+        raise RuntimeError('Unexpected ExecStartEx signature')
+    data = value.get('data')
+    # busctl method-message JSON may wrap one array value; property JSON may
+    # expose it directly. Accept only one fully typed command in either form.
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], list) and data[0] and isinstance(data[0][0], list):
+        data = data[0]
+    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], list) or len(data[0]) != 10:
+        raise RuntimeError('Expected exactly one ExecStart command')
+    row = data[0]
+    if not isinstance(row[0], str) or not isinstance(row[1], list) or not all(isinstance(arg, str) for arg in row[1]) or not isinstance(row[2], list) or not all(isinstance(flag, str) for flag in row[2]):
+        raise RuntimeError('Unexpected ExecStartEx command fields')
+    if not all(type(number) is int for number in row[3:]):
+        raise RuntimeError('Unexpected ExecStartEx accounting fields')
+    return row[0], row[1], row[2]
+
+
+def read_exec_start():
+    unit = bus('call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+               'org.freedesktop.systemd1.Manager', 'GetUnit', 's', UNIT)
+    if not isinstance(unit, dict) or unit.get('type') != 'o':
+        raise RuntimeError('Unexpected service object metadata')
+    obj = unit.get('data')
+    if isinstance(obj, list) and len(obj) == 1:
+        obj = obj[0]
+    if not isinstance(obj, str) or not re.fullmatch(r'/org/freedesktop/systemd1/unit/[A-Za-z0-9_]+', obj):
+        raise RuntimeError('Unexpected service object path')
+    return parse_exec_start(bus('get-property', 'org.freedesktop.systemd1', obj,
+                               'org.freedesktop.systemd1.Service', 'ExecStartEx'))
 
 
 def run(*args):
@@ -101,34 +166,48 @@ def main():
     if json.loads((PACKAGE / 'package.json').read_text()).get('version') != '2026.8.1':
         raise RuntimeError('Unexpected OpenClaw version')
     values = {}
-    for line in run('show', UNIT, '-p', 'Environment', '-p', 'EnvironmentFiles', '-p', 'ActiveState').splitlines():
+    for line in run('show', UNIT, '-p', 'MainPID', '-p', 'EnvironmentFiles', '-p', 'ActiveState').splitlines():
         key, sep, value = line.partition('=')
         if sep:
             values[key] = value
-    if values.get('EnvironmentFiles'):
-        raise RuntimeError('Service uses EnvironmentFiles; stop for local review to preserve NODE_OPTIONS')
     if values.get('ActiveState') != 'active':
         raise RuntimeError('Ember is not currently active; do not change service setup')
-    env = dict(item.split('=', 1) for item in shlex.split(values.get('Environment', '')) if '=' in item)
+    try:
+        pid = int(values.get('MainPID', '0'))
+    except ValueError:
+        raise RuntimeError('Service MainPID is unavailable') from None
+    env = read_live_scope(pid)
+    executable, argv, flags = read_exec_start()
     hook = Path(__file__).resolve().with_name('gateway-trace-preload.cjs')
     for filename in ['gateway-trace-preload.cjs', 'gateway-trace-loader.mjs', 'gateway-trace-runtime.cjs']:
         if not hook.with_name(filename).is_file():
             raise RuntimeError('Diagnostic package is incomplete')
-    content = render(env, hook)
+    content = render(env, hook, executable, argv, flags)
     if args.stage:
         target.parent.mkdir(parents=True, exist_ok=True)
         data = content.encode()
-        with digest_path.open('x') as f:
+        with os.fdopen(os.open(digest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as f:
             f.write(hashlib.sha256(data).hexdigest() + '\n')
         try:
-            with target.open('x') as f:
+            with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as f:
                 f.write(content)
         except Exception:
             digest_path.unlink()
             raise
-        run('daemon-reload')
+        try:
+            run('daemon-reload')
+            loaded = read_exec_start()
+            expected_argv = [executable, '--require', str(hook), *argv[1:]]
+            if loaded != (executable, expected_argv, flags):
+                raise RuntimeError('Staged launch command did not read back exactly')
+        except Exception:
+            target.unlink()
+            digest_path.unlink()
+            run('daemon-reload')
+            raise RuntimeError('Staged launch verification failed; diagnostic override removed; no restart') from None
     print(json.dumps({'v5_hash': 'matched', 'ember_service_scope': 'matched',
-                      'staged': args.stage, 'restart_performed': False,
+                      'launch_method': 'node-cli-require', 'environment_files_unchanged': True,
+                      'node_options_unchanged': True, 'staged': args.stage, 'restart_performed': False,
                       'dropin': str(target) if args.stage else None}))
 
 
