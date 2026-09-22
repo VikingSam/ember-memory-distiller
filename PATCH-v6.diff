@@ -1,0 +1,154 @@
+--- dist/memory-core-host-engine-sessions-BzzfWTfG.js (before)
++++ dist/memory-core-host-engine-sessions-BzzfWTfG.js (V6)
+@@ -286,8 +286,102 @@
+ * transcript artifacts remain explicit file artifacts until core owns archive
+ * artifact enumeration.
+ */
++function* emberSessionCorpusSteps(agentId, options = {}) {
++	const normalizedAgentId = normalizeAgentId(agentId);
++	const cfg = getRuntimeConfig();
++	const configuredStore = cfg.session?.store;
++	const storePath = resolveStorePath(configuredStore, { agentId: normalizedAgentId });
++	const sessionsDir = path.dirname(storePath);
++	const fixedStoreOwnerAgentId = extractAgentIdFromSessionsDir(sessionsDir);
++	const isAgentOwnedFixedStore = fixedStoreOwnerAgentId !== null && normalizeAgentId(fixedStoreOwnerAgentId) === normalizedAgentId;
++	const isSharedFixedStore = typeof configuredStore === "string" && configuredStore.trim().length > 0 && !configuredStore.includes("{agentId}") && !isAgentOwnedFixedStore;
++	const activeEntriesBySessionId = /* @__PURE__ */ new Map();
++	const entryOwnersBySessionId = /* @__PURE__ */ new Map();
++	const artifactDirsByPath = /* @__PURE__ */ new Map();
++	rememberArtifactDir(artifactDirsByPath, sessionsDir);
++	rememberArtifactDir(artifactDirsByPath, resolveSessionTranscriptsDirForAgent(normalizedAgentId));
++	const sessionEntries = listSessionEntries({
++		agentId: normalizedAgentId,
++		hydrateSkillPromptRefs: false,
++		storePath
++	});
++	const retainedInstances = options.includeRetainedSqlite ? listSessionTranscriptInstances({
++		agentId: normalizedAgentId,
++		hydrateSkillPromptRefs: false,
++		readConsistency: "latest",
++		storePath
++	}) : [];
++	const cronGeneratedSessionKeys = collectCronGeneratedSessionKeys([...retainedInstances.map(({ entry, sessionKey }) => ({
++		entry,
++		sessionKey
++	})), ...sessionEntries]);
++	for (const summary of sessionEntries) {
++		yield;
++		const ownerAgentId = resolveSessionAgentId({
++			config: cfg,
++			sessionKey: isSharedFixedStore ? summary.sessionKey : canonicalizeMainSessionAlias({
++				cfg,
++				agentId: normalizedAgentId,
++				sessionKey: summary.sessionKey
++			}),
++			...isSharedFixedStore ? {} : { fallbackAgentId: normalizedAgentId }
++		});
++		const entry = toSessionStoreCorpusEntry(ownerAgentId, storePath, summary, cronGeneratedSessionKeys);
++		if (!entry) continue;
++		entryOwnersBySessionId.set(entry.sessionId, ownerAgentId);
++		if (ownerAgentId === normalizedAgentId) activeEntriesBySessionId.set(entry.sessionId, entry);
++	}
++	const includeUnownedArtifacts = !isSharedFixedStore;
++	const corpusEntries = [...activeEntriesBySessionId.values()];
++	if (options.includeRetainedSqlite) for (const instance of retainedInstances) {
++		yield;
++		if (activeEntriesBySessionId.has(instance.sessionId)) continue;
++		const sessionKey = isSharedFixedStore ? instance.sessionKey : canonicalizeMainSessionAlias({
++			cfg,
++			agentId: normalizedAgentId,
++			sessionKey: instance.sessionKey
++		});
++		const ownerAgentId = resolveSessionAgentId({
++			config: cfg,
++			sessionKey,
++			...isSharedFixedStore ? {} : { fallbackAgentId: normalizedAgentId }
++		});
++		if (ownerAgentId !== normalizedAgentId) continue;
++		const entry = toRetainedSessionCorpusEntry(ownerAgentId, instance, sessionKey, storePath, cronGeneratedSessionKeys);
++		if (entry?.transcriptSource === "sqlite") corpusEntries.push(entry);
++	}
++	const scannedArtifactPaths = /* @__PURE__ */ new Set();
++	for (const artifactDir of artifactDirsByPath.values()) for (const artifactPath of listSessionTranscriptArtifactFiles(artifactDir)) {
++		yield;
++		const normalizedArtifactPath = normalizeRealComparablePath(artifactPath);
++		if (scannedArtifactPaths.has(normalizedArtifactPath)) continue;
++		scannedArtifactPaths.add(normalizedArtifactPath);
++		const primarySessionId = parseUsageCountedSessionIdFromFileName(path.basename(artifactPath));
++		if (!primarySessionId) continue;
++		const primaryEntry = activeEntriesBySessionId.get(primarySessionId);
++		const primaryOwner = entryOwnersBySessionId.get(primarySessionId);
++		if (primaryOwner && primaryOwner !== normalizedAgentId) continue;
++		if (!primaryOwner && !includeUnownedArtifacts) continue;
++		corpusEntries.push(toArtifactCorpusEntry(normalizedAgentId, artifactPath, primarySessionId, primaryEntry));
++	}
++	return corpusEntries;
++}
++// ember-memory v6: same enumeration rules, cooperative scheduling for async callers.
+ async function listSessionTranscriptCorpusEntriesForAgent(agentId, options = {}) {
+-	return listSessionTranscriptCorpusEntriesForAgentSync(agentId, options);
++	// Yield before entering the synchronous prelude, including during construction.
++	await new Promise((resolve) => setImmediate(resolve));
++	const steps = emberSessionCorpusSteps(agentId, options);
++	let work = 0;
++	let sliceStarted = performance.now();
++	for (;;) {
++		const step = steps.next();
++		if (step.done) return step.value;
++		if (++work >= 64 || performance.now() - sliceStarted >= 8) {
++			await new Promise((resolve) => setImmediate(resolve));
++			work = 0;
++			sliceStarted = performance.now();
++		}
++	}
+ }
+ //#endregion
+ //#region packages/memory-host-sdk/src/host/session-files.ts
+--- dist/session-accessor.sqlite-entry-CoLie3L_.js (before)
++++ dist/session-accessor.sqlite-entry-CoLie3L_.js (V6)
+@@ -106,35 +106,20 @@
+ }
+ /** Read retained archive identities through the same physical and logical session owner. */
+ function listSessionTranscriptArchivesReadOnly(scope) {
+-	// ember-memory: bounded-session-archives-v2; two IN lists, <=800 bindings.
++	// ember-memory v6: two bound JSON arrays, one statement/read snapshot.
+ 	const selectors = [...new Set(scope.sessionIds)];
+ 	if (selectors.length === 0) return [];
++	if (!selectors.every((value) => typeof value === "string")) throw new TypeError("Expected session identity strings");
+ 	const resolved = resolveSqliteReadScope(scope);
+ 	const result = withOpenClawAgentDatabaseReadOnly(({ db, agentId }) => {
+-		const byArchive = new Map();
+-		// Keep all batches in one read snapshot, including when already in a transaction.
+-		db.exec("SAVEPOINT ember_archive_lookup");
+-		try {
+-			for (let start = 0; start < selectors.length; start += 400) {
+-				const batch = selectors.slice(start, start + 400);
+-				const rows = executeSqliteQuerySync(db, getSessionKysely(db).selectFrom("session_transcript_archives").select([
+-					"archive_name as archiveName",
+-					"session_id as sessionId",
+-					"session_key as sessionKey",
+-					"created_at as createdAt"
+-				]).where((expression) => expression.or([expression("session_id", "in", batch), expression("session_key", "in", batch)])).orderBy("created_at").orderBy("session_id")).rows;
+-				for (const row of rows) {
+-					if (resolveAgentIdFromSessionKey(row.sessionKey, agentId) === resolved.agentId) byArchive.set(row.archiveName, row);
+-				}
+-			}
+-			db.exec("RELEASE ember_archive_lookup");
+-		} catch (error) {
+-			db.exec("ROLLBACK TO ember_archive_lookup");
+-			db.exec("RELEASE ember_archive_lookup");
+-			throw error;
+-		}
+-		// Restore the original global ordering; do not concatenate batch-local orders.
+-		return [...byArchive.values()].sort((a, b) => a.createdAt - b.createdAt || Buffer.compare(Buffer.from(a.sessionId), Buffer.from(b.sessionId)));
++		const encoded = JSON.stringify(selectors);
++		return db.prepare(`SELECT archive_name AS archiveName, session_id AS sessionId,
++			session_key AS sessionKey, created_at AS createdAt
++			FROM session_transcript_archives
++			WHERE session_id IN (SELECT value FROM json_each(?))
++			   OR session_key IN (SELECT value FROM json_each(?))
++			ORDER BY created_at, session_id`).all(encoded, encoded)
++			.filter((row) => resolveAgentIdFromSessionKey(row.sessionKey, agentId) === resolved.agentId);
+ 	}, toDatabaseOptions(resolved));
+ 	return result.found ? result.value : [];
+ }
