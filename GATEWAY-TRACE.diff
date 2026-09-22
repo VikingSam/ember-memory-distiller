@@ -1,0 +1,64 @@
+--- V5-on-disk/manager-runtime.js
++++ diagnostic-in-memory/manager-runtime.js
+@@ -1,3 +1,5 @@
++const __emberGW = globalThis.__emberGatewayTrace;
++if (!__emberGW) throw new Error('Ember gateway trace: runtime missing');
+ import { r as truncateUtf16Safe } from "../../utf16-slice-D_ngcYKd.js";
+ import { o as normalizeLowercaseStringOrEmpty } from "../../string-coerce-CIXf7egm.js";
+ import { i as toErrorObject } from "../../error-coercion-CKFmnpjH.js";
+@@ -52,7 +54,7 @@
+ import { d as sessionPathForFile, f as sessionPathForSessionIdentity, m as listSessionTranscriptCorpusEntriesForAgent, p as statSessionEntrySync, r as buildSessionEntry } from "../../memory-core-host-engine-sessions-BzzfWTfG.js";
+ import "../../memory-core-host-engine-storage-DrggEsvm.js";
+ import { r as vectorToBlob, t as isVectorKnnRow } from "../../manager-search-knn-Du9AM2HM.js";
+-import { d as withMemoryWorkspaceLock } from "../../dreaming-dreams-file-k2G5pqAC.js";
++import { d as __emberOriginalWorkspaceLock } from "../../dreaming-dreams-file-k2G5pqAC.js";
+ import { i as listMemorySessionTombstones, n as hasMemorySessionTombstone } from "../../memory-entry-origins-DHPCnUGh.js";
+ import { n as textSimilarity, r as tokenize, t as jaccardSimilarity } from "../../tokenize-2W-LB6Vk.js";
+ import { n as readSessionResetRecallCutoffMetadata } from "../../session-reset-recall-metadata-_gATHFyh.js";
+@@ -620,10 +622,11 @@
+ 	}
+ }
+ async function acquireMemoryIndexReadGeneration(databasePath, signal) {
+-	return await acquire(databasePath, "read", signal);
++	return await __emberGW.timed("generation_read_wait", () => acquire(databasePath, "read", signal));
+ }
+ async function withMemoryIndexPublishGeneration(databasePath, run) {
+-	return await withLease(databasePath, "write", run);
++	const release = await __emberGW.timed("generation_write_wait", () => acquire(databasePath, "write"));
++	try { return await __emberGW.timed("generation_write_hold", run); } finally { release(); }
+ }
+ //#endregion
+ //#region extensions/memory-core/src/memory/manager-provider-state.ts
+@@ -2808,7 +2811,8 @@
+ 	if (typeof configured === "number" && Number.isFinite(configured)) return Math.max(1, Math.floor(configured));
+ 	return params.providerId === "ollama" ? 1 : EMBEDDING_INDEX_CONCURRENCY;
+ }
+-async function runEmbeddingOperationWithTimeout(params) {
++async function runEmbeddingOperationWithTimeout(params) { return await __emberGW.timed("embedding_request", () => __emberOriginalEmbeddingOperation(params), [params]); }
++async function __emberOriginalEmbeddingOperation(params) {
+ 	const controller = new AbortController();
+ 	const signal = params.signal ? AbortSignal.any([params.signal, controller.signal]) : controller.signal;
+ 	if (!Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0) return await params.run(signal);
+@@ -6467,4 +6471,22 @@
+ 	}
+ };
+ //#endregion
++
++function withMemoryWorkspaceLock(workspaceDir, task) {
++ return __emberGW.timed('workspace_operation', () => __emberOriginalWorkspaceLock(workspaceDir,
++   () => __emberGW.timed('workspace_hold', task)));
++}
++for (const [method,phase] of [
++ ['searchCandidates','search'],['ensureProviderInitialized','provider_init'],
++ ['syncAdmitted','sync_admitted'],['syncPublishedIndexInBackground','background_maintenance'],
++ ['runSyncPass','sync_pass'],['runSessionStartupCatchup','startup_catchup'],
++ ['processSessionUpdateBatch','session_update'],['syncMemoryFiles','memory_files'],
++ ['syncArchiveFiles','session_files'],['embedBatchWithRetry','batch_embedding'],
++ ['embedBatchInputsWithRetry','batch_embedding'],['embedQueryWithRetry','query_embedding'],
++ ['probeEmbeddingAvailability','provider_probe'],['confirmEmbeddingBootstrapRecovery','bootstrap_probe'],
++ ['waitForEmbeddingRetry','retry_sleep'],['searchKeywordWithFallback','fts'],['searchVector','vector']
++]) __emberGW.wrap(MemoryIndexManager.prototype,method,phase);
++__emberGW.wrap(MemoryIndexManager,'get','manager_get');
++__emberGW.emit({event:'module_loaded',mode:'observe-v5'});
++
+ export { MemoryIndexManager, closeAllMemoryIndexManagers, closeMemoryIndexManagersForAgent };
