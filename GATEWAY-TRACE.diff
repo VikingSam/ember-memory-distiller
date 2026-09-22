@@ -1,5 +1,5 @@
---- V5-on-disk/manager-runtime.js
-+++ diagnostic-in-memory/manager-runtime.js
+--- dist/extensions/memory-core/manager-runtime.js
++++ dist/extensions/memory-core/manager-runtime.js (in-memory diagnostic only)
 @@ -1,3 +1,5 @@
 +const __emberGW = globalThis.__emberGatewayTrace;
 +if (!__emberGW) throw new Error('Ember gateway trace: runtime missing');
@@ -62,3 +62,66 @@
 +__emberGW.emit({event:'module_loaded',mode:'observe-v5'});
 +
  export { MemoryIndexManager, closeAllMemoryIndexManagers, closeMemoryIndexManagersForAgent };
+--- dist/tools-DNmkgIrY.js
++++ dist/tools-DNmkgIrY.js (in-memory diagnostic only)
+@@ -1,3 +1,5 @@
++const __emberGW=globalThis.__emberGatewayTrace;
++__emberGW.emit({event:"tool_hook_ready"},true);
+ import { r as createLazyRuntimeModule } from "./lazy-runtime-CgCh8H_K.js";
+ import { o as normalizeLowercaseStringOrEmpty } from "./string-coerce-CIXf7egm.js";
+ import { n as extractErrorCode, r as formatErrorMessage } from "./errors-Z0lU1pH3.js";
+@@ -17,7 +19,8 @@
+ import "./memory-core-host-runtime-core-Cu0g3PM_.js";
+ import { i as resolveMemoryToolContext, n as MEMORY_SEARCH_TOOL_CONTRACT, t as MEMORY_GET_TOOL_CONTRACT } from "./memory-tool-contract-ri_aV2J9.js";
+ import { f as recordShortTermRecalls } from "./short-term-promotion-BNRfeoYA.js";
+-import { t as filterMemorySearchHitsBySessionVisibility } from "./session-search-visibility-goTjejWD.js";
++import { t as __emberOriginalVisibility } from "./session-search-visibility-goTjejWD.js";
++async function filterMemorySearchHitsBySessionVisibility(...args) { return await __emberGW.timed("visibility_filter", () => __emberOriginalVisibility(...args)); }
+ //#region extensions/memory-core/src/memory/search-deadline.ts
+ const DEFAULT_MEMORY_SEARCH_TIMEOUT_MS = 15e3;
+ function resolveMemorySearchAbortError(signal) {
+@@ -37,7 +40,8 @@
+ function isMemorySearchDeadlineError(error) {
+ 	return typeof error === "object" && error !== null && memorySearchDeadlineErrors.has(error);
+ }
+-async function runMemorySearchWithDeadline(params) {
++async function runMemorySearchWithDeadline(params) { return await __emberGW.timed("tool_deadline", () => __emberOriginal_runMemorySearchWithDeadline(params)); }
++async function __emberOriginal_runMemorySearchWithDeadline(params) {
+ 	if (params.parentSignal?.aborted) throw resolveMemorySearchAbortError(params.parentSignal);
+ 	const controller = new AbortController();
+ 	const timeoutError = createMemorySearchTimeoutError(params.timeoutMs);
+@@ -320,7 +324,8 @@
+ const SESSION_CANONICAL_KEY_MIGRATION_WARNING = "Memory search is unavailable because the session catalog requires canonical-key migration.";
+ const SESSION_CANONICAL_KEY_MIGRATION_ACTION = "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.";
+ const loadMemoryToolRuntime = createLazyRuntimeModule(() => import("./tools.runtime.js"));
+-async function getMemoryManagerContextWithPurpose(params) {
++async function getMemoryManagerContextWithPurpose(params) { return await __emberGW.timed("manager_context", () => __emberOriginal_getMemoryManagerContextWithPurpose(params)); }
++async function __emberOriginal_getMemoryManagerContextWithPurpose(params) {
+ 	const { getMemorySearchManager } = await loadMemoryToolRuntime();
+ 	const startedAt = Date.now();
+ 	const { manager, debug, error } = await getMemorySearchManager({
+@@ -391,7 +396,8 @@
+ 	const message = formatErrorMessage(error).toLowerCase();
+ 	return message.includes("database is not open") || message.includes("database connection is not open") || message.includes("database handle is closed") || message.includes("memory search manager is closed");
+ }
+-async function executeMemorySearchToolQuery(params) {
++async function executeMemorySearchToolQuery(params) { return await __emberGW.timed("tool_query", () => __emberOriginal_executeMemorySearchToolQuery(params)); }
++async function __emberOriginal_executeMemorySearchToolQuery(params) {
+ 	const startedAt = Date.now();
+ 	const runtimeDebug = [];
+ 	let active = params.initialManager;
+@@ -624,6 +630,14 @@
+ 	}).catch(() => {});
+ }
+ function createMemorySearchTool(options) {
++    const tool=__emberOriginalCreateMemorySearchTool(options);
++    if(tool && typeof tool.execute==='function') {
++      const execute=tool.execute;
++      tool.execute=function(...args){return __emberGW.captureSearch(()=>execute.apply(this,args));};
++    }
++    return tool;
++  }
++  function __emberOriginalCreateMemorySearchTool(options) {
+ 	return createMemoryTool({
+ 		options,
+ 		contract: MEMORY_SEARCH_TOOL_CONTRACT,

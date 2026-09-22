@@ -14,6 +14,7 @@ UNIT = None
 STATE = None
 PACKAGE = None
 EXPECTED = 'e522174564eed7c90b60c8ebff8536f40bc41f7938efb5535d9281ca7e5a70df'
+TOOLS_EXPECTED = '5efc8c5eb2079a359adedf3e2f8abfb93780f5bac54b4314bc3cba1e2c9873c5'
 NAME = '90-ember-memory-trace-v1.conf'
 MARKER = '# Ember bounded memory diagnostic v1; no automatic restart\n'
 
@@ -163,6 +164,8 @@ def main():
     source = PACKAGE / 'dist/extensions/memory-core/manager-runtime.js'
     if hashlib.sha256(source.read_bytes()).hexdigest() != EXPECTED:
         raise RuntimeError('Installed manager does not match V5')
+    if hashlib.sha256((PACKAGE / 'dist/tools-DNmkgIrY.js').read_bytes()).hexdigest() != TOOLS_EXPECTED:
+        raise RuntimeError('Installed search tools do not match expected source')
     if json.loads((PACKAGE / 'package.json').read_text()).get('version') != '2026.8.1':
         raise RuntimeError('Unexpected OpenClaw version')
     values = {}

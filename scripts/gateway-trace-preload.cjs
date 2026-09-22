@@ -18,7 +18,8 @@ const expected='e522174564eed7c90b60c8ebff8536f40bc41f7938efb5535d9281ca7e5a70df
 if(createHash('sha256').update(fs.readFileSync(target)).digest('hex')!==expected) {
   throw new Error('Ember gateway trace: V5 hash mismatch');
 }
+if(createHash('sha256').update(fs.readFileSync(path.join(packageDir,'dist/tools-DNmkgIrY.js'))).digest('hex')!=='5efc8c5eb2079a359adedf3e2f8abfb93780f5bac54b4314bc3cba1e2c9873c5') throw new Error('Ember gateway trace: tools hash mismatch');
 const {createRuntime}=require('./gateway-trace-runtime.cjs');
-globalThis.__emberGatewayTrace=createRuntime({packageDir});
+globalThis.__emberGatewayTrace=createRuntime({packageDir,searchTriggered:true});
 require('node:module').register(pathToFileURL(path.join(__dirname,'gateway-trace-loader.mjs')),{parentURL:pathToFileURL(__filename),data:{packageDir}});
-void globalThis.__emberGatewayTrace.startCapture();
+globalThis.__emberGatewayTrace.arm();

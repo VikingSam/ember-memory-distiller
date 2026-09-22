@@ -50,6 +50,7 @@ class GatewayServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);package=root/'package';code=package/'dist/extensions/memory-core/manager-runtime.js'
             code.parent.mkdir(parents=True);code.write_text('V5 fixture')
+            tool=package/'dist/tools-DNmkgIrY.js';tool.write_text('tools fixture')
             (package/'package.json').write_text('{"version":"2026.8.1"}')
             target=root/'unit.d'/m.NAME
             envfile=root/'original.env';envfile.write_text('NODE_OPTIONS=--max-old-space-size=2048\nSECRET=PRIVATE_SYNTHETIC\n')
@@ -65,7 +66,7 @@ class GatewayServiceTests(unittest.TestCase):
                     return exe,[exe,'--require',hook,*argv[1:]],flags
                 return self.command
             scope={'OPENCLAW_STATE_DIR':'/example/state','OPENCLAW_SYSTEMD_UNIT':'example-memory.service','NODE_OPTIONS':'--max-old-space-size=2048'}
-            with patch.object(m,'read_live_scope',lambda pid:scope),patch.object(m,'read_exec_start',fake_launch),patch.object(m,'PACKAGE',package),patch.object(m,'EXPECTED',hashlib.sha256(code.read_bytes()).hexdigest()),patch.object(m,'dropin_path',lambda:target),patch.object(m,'run',fake_run),redirect_stdout(io.StringIO()):
+            with patch.object(m,'read_live_scope',lambda pid:scope),patch.object(m,'read_exec_start',fake_launch),patch.object(m,'PACKAGE',package),patch.object(m,'EXPECTED',hashlib.sha256(code.read_bytes()).hexdigest()),patch.object(m,'TOOLS_EXPECTED',hashlib.sha256(tool.read_bytes()).hexdigest()),patch.object(m,'dropin_path',lambda:target),patch.object(m,'run',fake_run),redirect_stdout(io.StringIO()):
                 with patch.object(sys,'argv',['helper','--check','--unit','example-memory.service','--state-dir','/example/state','--package-dir',str(package)]):m.main()
                 self.assertFalse(target.exists())
                 with patch.object(sys,'argv',['helper','--stage','--unit','example-memory.service','--state-dir','/example/state','--package-dir',str(package)]):m.main()
@@ -103,6 +104,7 @@ class GatewayServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);package=root/'package';code=package/'dist/extensions/memory-core/manager-runtime.js'
             code.parent.mkdir(parents=True);code.write_text('V5 fixture')
+            tool=package/'dist/tools-DNmkgIrY.js';tool.write_text('tools fixture')
             (package/'package.json').write_text('{"version":"2026.8.1"}')
             target=root/'unit.d'/m.NAME
             target.parent.mkdir();unrelated=target.parent/'other.conf';unrelated.write_text('keep')
@@ -111,7 +113,7 @@ class GatewayServiceTests(unittest.TestCase):
             def run(*args):
                 calls.append(args)
                 return 'ActiveState=active\nMainPID=123\nEnvironmentFiles=/example/private.env\n' if args[0]=='show' else ''
-            with patch.object(m,'EXPECTED',hashlib.sha256(code.read_bytes()).hexdigest()),patch.object(m,'dropin_path',lambda:target),patch.object(m,'run',run),patch.object(m,'read_live_scope',lambda pid:scope),patch.object(m,'read_exec_start',lambda:self.command),redirect_stdout(io.StringIO()):
+            with patch.object(m,'EXPECTED',hashlib.sha256(code.read_bytes()).hexdigest()),patch.object(m,'TOOLS_EXPECTED',hashlib.sha256(tool.read_bytes()).hexdigest()),patch.object(m,'dropin_path',lambda:target),patch.object(m,'run',run),patch.object(m,'read_live_scope',lambda pid:scope),patch.object(m,'read_exec_start',lambda:self.command),redirect_stdout(io.StringIO()):
                 with patch.object(sys,'argv',['helper','--stage','--unit','example-memory.service','--state-dir','/example/state','--package-dir',str(package)]):
                     with self.assertRaisesRegex(RuntimeError,'override removed'):m.main()
             self.assertFalse(target.exists());self.assertFalse(target.with_suffix('.sha256').exists())

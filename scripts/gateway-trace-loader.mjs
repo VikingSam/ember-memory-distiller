@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {realpathSync} from 'node:fs';
 export const EXPECTED='e522174564eed7c90b60c8ebff8536f40bc41f7938efb5535d9281ca7e5a70df';
-let target;
-export function initialize(data) {target=realpathSync(path.resolve(data.packageDir,'dist/extensions/memory-core/manager-runtime.js'));}
+export const TOOLS_EXPECTED='5efc8c5eb2079a359adedf3e2f8abfb93780f5bac54b4314bc3cba1e2c9873c5';
+let target, toolsTarget;
+export function initialize(data) {target=realpathSync(path.resolve(data.packageDir,'dist/extensions/memory-core/manager-runtime.js'));toolsTarget=realpathSync(path.resolve(data.packageDir,'dist/tools-DNmkgIrY.js'));}
 export function checkedTransform(source) {
   if (createHash('sha256').update(source).digest('hex')!==EXPECTED) throw new Error('Ember gateway trace: V5 hash mismatch');
   return instrument(source);
@@ -45,9 +46,40 @@ __emberGW.emit({event:'module_loaded',mode:'observe-v5'});
   once('export { MemoryIndexManager, closeAllMemoryIndexManagers, closeMemoryIndexManagersForAgent };',wrappers+'\nexport { MemoryIndexManager, closeAllMemoryIndexManagers, closeMemoryIndexManagersForAgent };');
   return "const __emberGW = globalThis.__emberGatewayTrace;\nif (!__emberGW) throw new Error('Ember gateway trace: runtime missing');\n" + source;
 }
+export function instrumentTools(source) {
+  const once=(old,replacement)=>{
+    if(source.split(old).length!==2) throw new Error('Ember gateway trace: tool source anchor mismatch');
+    source=source.replace(old,replacement);
+  };
+  once('function createMemorySearchTool(options) {', `function createMemorySearchTool(options) {
+    const tool=__emberOriginalCreateMemorySearchTool(options);
+    if(tool && typeof tool.execute==='function') {
+      const execute=tool.execute;
+      tool.execute=function(...args){return __emberGW.captureSearch(()=>execute.apply(this,args));};
+    }
+    return tool;
+  }
+  function __emberOriginalCreateMemorySearchTool(options) {`);
+  for(const [name,phase] of [
+    ['runMemorySearchWithDeadline','tool_deadline'],
+    ['executeMemorySearchToolQuery','tool_query'],
+    ['getMemoryManagerContextWithPurpose','manager_context']
+  ]) once('async function '+name+'(params) {',
+    'async function '+name+'(params) { return await __emberGW.timed("'+phase+'", () => __emberOriginal_'+name+'(params)); }\nasync function __emberOriginal_'+name+'(params) {');
+  once('import { t as filterMemorySearchHitsBySessionVisibility } from "./session-search-visibility-goTjejWD.js";',
+    'import { t as __emberOriginalVisibility } from "./session-search-visibility-goTjejWD.js";\nasync function filterMemorySearchHitsBySessionVisibility(...args) { return await __emberGW.timed("visibility_filter", () => __emberOriginalVisibility(...args)); }');
+  return 'const __emberGW=globalThis.__emberGatewayTrace;\n__emberGW.emit({event:"tool_hook_ready"},true);\n'+source;
+}
+export function checkedToolsTransform(source) {
+  if(createHash('sha256').update(source).digest('hex')!==TOOLS_EXPECTED) throw new Error('Ember gateway trace: tools hash mismatch');
+  return instrumentTools(source);
+}
 export async function load(url,context,nextLoad) {
   const result=await nextLoad(url,context);
-  if (!url.startsWith('file:') || path.resolve(fileURLToPath(url))!==target) return result;
+  if (!url.startsWith('file:')) return result;
+  const filename=path.resolve(fileURLToPath(url));
+  if(filename!==target && filename!==toolsTarget) return result;
   if(result.source==null) throw new Error('Ember gateway trace: no source');
-  return {...result,source:checkedTransform(typeof result.source==='string'?result.source:Buffer.from(result.source).toString('utf8'))};
+  const source=typeof result.source==='string'?result.source:Buffer.from(result.source).toString('utf8');
+  return {...result,source:filename===target?checkedTransform(source):checkedToolsTransform(source)};
 }

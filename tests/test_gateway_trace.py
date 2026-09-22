@@ -98,6 +98,59 @@ assert(!JSON.stringify(rows).includes('PRIVATE'));
 assert(!JSON.stringify(profile).includes(PACKAGE));
 '''.replace('RUNTIME',json.dumps(str(ROOT/'scripts/gateway-trace-runtime.cjs'))).replace('HOTSPOT',json.dumps(str(dist/'fixture-hotspot.cjs'))).replace('PACKAGE',json.dumps(str(package))))
 
+    def test_search_trigger_waits_then_records_once_and_expires(self):
+        self.node('''
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';const require=createRequire(import.meta.url);
+const {createRuntime}=require(RUNTIME);const rows=[];let time=0;
+const t=createRuntime({searchTriggered:true,armMs:1000,durationMs:100,now:()=>time,profile:false,sink:r=>rows.push(r)});
+t.arm();time=500;
+await t.timed('search',async()=>1);
+assert.deepEqual(rows.map(r=>r.event),['armed']);
+assert.equal(await t.captureSearch(()=>t.timed('manager_context',async()=>42)),42);
+assert.equal(rows.filter(r=>r.event==='capture_start').length,1);
+assert(rows.some(r=>r.phase==='manager_context'&&r.parent!==null));
+time=601;const n=rows.length;
+assert.equal(await t.captureSearch(async()=>43),43);assert.equal(rows.length,n);
+await t.finish();assert.equal(rows.filter(r=>r.event==='capture_start').length,1);
+const expired=[];const e=createRuntime({searchTriggered:true,armMs:1,profile:false,sink:r=>expired.push(r)});e.arm();
+await new Promise(r=>setTimeout(r,20));
+assert.equal(await e.captureSearch(async()=>44),44);
+assert.deepEqual(expired.map(r=>r.event),['armed','arm_expired']);
+'''.replace('RUNTIME',json.dumps(str(ROOT/'scripts/gateway-trace-runtime.cjs'))))
+
+    def test_tool_transform_preserves_receiver_args_results_and_errors(self):
+        fixture = '''
+import { t as filterMemorySearchHitsBySessionVisibility } from "./session-search-visibility-goTjejWD.js";
+function createMemorySearchTool(options) { return options; }
+async function runMemorySearchWithDeadline(params) { return params.run(); }
+async function executeMemorySearchToolQuery(params) { return filterMemorySearchHitsBySessionVisibility(params); }
+async function getMemoryManagerContextWithPurpose(params) { return params; }
+export {createMemorySearchTool,runMemorySearchWithDeadline,executeMemorySearchToolQuery,getMemoryManagerContextWithPurpose};
+'''
+        self.node('''
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';const require=createRequire(import.meta.url);
+const {createRuntime}=require(RUNTIME);const {instrumentTools,checkedToolsTransform}=await import(LOADER);
+assert.throws(()=>checkedToolsTransform(FIXTURE),/hash mismatch/);
+let source=instrumentTools(FIXTURE).replace(/import { t as __emberOriginalVisibility }[^;]+;/,'async function __emberOriginalVisibility(x){return x;}');
+const rows=[];globalThis.__emberGatewayTrace=createRuntime({searchTriggered:true,profile:false,sink:r=>rows.push(r)});
+globalThis.__emberGatewayTrace.arm();
+const m=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+assert.equal(m.createMemorySearchTool(undefined),undefined);
+const params={secret:'PRIVATE'},signal=new AbortController().signal,result={private:'PRIVATE_RESULT'};
+const tool=m.createMemorySearchTool({execute:async function(id,p,s){assert.equal(this,tool);assert.equal(id,'PRIVATE_ID');assert.equal(p,params);assert.equal(s,signal);return result;}});
+assert.equal(await tool.execute('PRIVATE_ID',params,signal),result);
+const failure=new Error('PRIVATE');
+await assert.rejects(m.runMemorySearchWithDeadline({run:async()=>{throw failure;}}),e=>e===failure);
+assert.equal(await m.executeMemorySearchToolQuery(params),params);
+assert.equal(await m.getMemoryManagerContextWithPurpose(params),params);
+assert(rows.some(r=>r.phase==='tool_call'));
+assert(rows.some(r=>r.phase==='visibility_filter'));
+assert(!JSON.stringify(rows).includes('PRIVATE'));
+await globalThis.__emberGatewayTrace.finish();
+'''.replace('RUNTIME',json.dumps(str(ROOT/'scripts/gateway-trace-runtime.cjs'))).replace('LOADER',json.dumps((ROOT/'scripts/gateway-trace-loader.mjs').as_uri())).replace('FIXTURE',json.dumps(fixture)))
+
     def test_preload_scope_and_non_gateway_noop(self):
         hook=ROOT / 'scripts/gateway-trace-preload.cjs'
         r=subprocess.run(['node','--require',str(hook),'-e',''],capture_output=True,text=True,timeout=10)

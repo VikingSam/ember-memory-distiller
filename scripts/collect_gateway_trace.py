@@ -7,8 +7,8 @@ import subprocess
 import sys
 
 PREFIX = 'EMBER_GATEWAY_TRACE '
-EVENTS = {'capture_start','module_loaded','start','end','health','record_cap','capture_end','cpu_samples','profiler_unavailable'}
-PHASES = {'manager_get','search','provider_init','sync_admitted','background_maintenance','sync_pass','startup_catchup','session_update','memory_files','session_files','batch_embedding','query_embedding','provider_probe','bootstrap_probe','embedding_request','retry_sleep','fts','vector','generation_read_wait','generation_write_wait','generation_write_hold','workspace_operation','workspace_hold'}
+EVENTS = {'tool_hook_ready','armed','arm_expired','capture_start','module_loaded','start','end','health','record_cap','capture_end','cpu_samples','profiler_unavailable'}
+PHASES = {'tool_call','tool_deadline','tool_query','manager_context','visibility_filter','manager_get','search','provider_init','sync_admitted','background_maintenance','sync_pass','startup_catchup','session_update','memory_files','session_files','batch_embedding','query_embedding','provider_probe','bootstrap_probe','embedding_request','retry_sleep','fts','vector','generation_read_wait','generation_write_wait','generation_write_hold','workspace_operation','workspace_hold'}
 NUMBERS = {'pid','at_ms','id','parent','elapsed_ms','items','timeout_ms','duration_ms','max_records','limit','cpu_ms','event_loop_max_ms','sample_interval_us','line','samples'}
 REASONS = {'watch','interval','session-delta','session-startup-catchup','cli','search','session-start','retry','fallback','other'}
 ERRORS = {'SQLITE_BUSY','SQLITE_LOCKED','ETIMEDOUT','ECONNRESET','ECONNREFUSED','EAI_AGAIN','ABORT_ERR','sqlite_locked','rate_limit','timeout','aborted','transport','other'}

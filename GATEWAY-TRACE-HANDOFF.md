@@ -1,11 +1,10 @@
-# Bounded gateway memory diagnostic v1.2
+# Search-triggered gateway diagnostic v1.3
 
-Use v1.2 instead of v1/v1.1. The recorder is unchanged from v1.1. Setup now
-supports services with EnvironmentFiles by inserting Node's --require into
-the existing ExecStart argv, instead of modifying NODE_OPTIONS. The helper
-reads typed systemd launch metadata, retains every original argument, and
-verifies the effective launch command after staging. No environment file is
-read, copied, reordered or changed. NODE_OPTIONS is left untouched.
+This replaces v1.2: it arms at startup but records only when the FIRST
+memory_search tool executes. The 180-second recording no longer expires
+during quiet startup. It includes tool entry, the existing deadline, manager
+acquisition, retrieval, and session visibility filtering. It changes no search
+behavior or timeout. The arm expires after 15 minutes if no search arrives.
 
 This is an observational diagnostic, not V6 and not a search fix. The goal is
 to distinguish background indexing, provider checks, search requests, lock
@@ -24,12 +23,15 @@ before producing a runtime drop-in. It has no default target.
 - No installed OpenClaw file changes, database opens, direct SQL, searches,
   provider requests, or indexing commands are performed by the diagnostic.
   The running gateway continues its normal work, which can write and use APIs.
-- A Node loader transforms only that manager in memory. Maintenance, retries,
+- A Node loader transforms the exact V5 manager and stock tools-DNmkgIrY.js in memory. Maintenance, retries,
   timeouts, locks, sync configuration, V2/V3/V4/V5 behavior stay in place.
 - Existing async operations are wrapped for timing; a local V8 inspector
   session samples CPU stacks every 10 ms. No inspector TCP port is opened.
   Instrumentation has overhead; this is not a clean latency benchmark.
-- Capture lasts 180 seconds from preload per gateway process. If the event
+- Capture lasts 180 seconds from the first memory_search execution per gateway
+  process. Before that, only a fixed armed record and tool-hook readiness
+  record are emitted; no CPU profiling occurs. The first call waits for local
+  profiler initialization before invoking the unchanged tool. If the event
   loop stalls, finalization runs when it becomes schedulable; it is not a hard
   real-time timer. Phase records stop after the deadline. Up to 2,000 regular
   records plus cap/end/profile records are emitted. Timers do not keep a
@@ -68,12 +70,14 @@ python3 -B -m unittest discover -s tests -p 'test_gateway*.py' -v
 python3 -B scripts/gateway_trace_service.py --check --unit "$TRACE_UNIT" --state-dir "$TRACE_STATE" --package-dir "$TRACE_PACKAGE"
 ```
 
-Eleven packaged tests cover privacy, async parent correlation, error/result
+Thirteen packaged tests cover privacy, async parent correlation, error/result
 preservation, release on failure, capture expiry/cap, actual local CPU-profiler
 lifecycle, safe service scope, preservation of existing NODE_OPTIONS/environment files, journal export field
 filtering, stage/remove drift protection, typed launch metadata, automatic
 rollback on readback mismatch, and CPU-stall attribution through native calls.
-The complete transformed V5 module was separately syntax-checked locally.
+Both complete transformed public modules were separately syntax-checked locally.
+Tests also cover idle arming, expiry without a search, one-shot capture, and
+tool receiver/argument/result/error preservation.
 These are local tests, not live gateway proof.
 
 Preflight reads package files, systemd properties and the live MainPID's
@@ -133,10 +137,23 @@ The existing V5 backup/revert remains independent and unchanged.
 
 ## Capture
 
-Let normal gateway activity run for the one 180-second capture. Do not add a
-search, synthetic file, force-index, cleanup, prune, VACUUM, or health probe to
-stimulate it. Keep existing logs local. If there is no relevant activity in
-this window, report that; do not silently extend or repeat the experiment.
+After the approved restart and readiness, remove the temporary drop-in as
+above. Confirm an `armed` record for the new gateway PID. Within 15 minutes
+of startup, coordinate EXACTLY ONE normal gateway memory_search using the
+same familiar query. This new captured call is separate from the already
+reported failed check; it is not a request to repeat the old check now.
+Do not use CLI search, alter the 15-second timeout, or retry on failure.
+
+If a normal search has already triggered capture, do not add another. Keep
+watcher-addition/removal tests deferred. Do not add synthetic files, force-index,
+cleanup, prune, VACUUM, or health probes. The recorder does not call a search
+itself. It follows natural continuation for 180 seconds after the first call,
+including operations that outlive the tool timeout. Do not extend/repeat.
+
+A `tool_hook_ready` record proves the tool module was instrumented. If the
+controlled call produces no `capture_start`/`tool_call`, report that; the live
+load path was not established. Do not interpret missing phases as idle work.
+If `arm_expired` appears instead, send that and stop without rearming.
 
 Obtain the new invocation ID with systemctl (OS metadata only):
 
@@ -148,10 +165,11 @@ python3 -B scripts/collect_gateway_trace.py --unit "$TRACE_UNIT" --invocation <N
 The collector reads only that service/invocation's existing journal and exports
 only lines starting `EMBER_GATEWAY_TRACE ` with diagnostic event names. It
 does not export ordinary logs or start any OpenClaw work. Forward that JSONL. Keep other stderr, query text, content and provider errors local.
-Records required: capture_start, module_loaded mode=observe-v5, health records,
+Records required: armed, tool_hook_ready, capture_start, tool_call, health records,
 start/end pairs (or active IDs at capture_end), capture_end, cpu_samples.
-Both launcher/child PIDs may appear; only the PID emitting module_loaded owns
-these manager phases. Keep the IDs, timestamps and parent links intact.
+Both launcher/child PIDs may appear; correlate records by PID.
+module_loaded mode=observe-v5 appears if the manager loads during capture;
+if already loaded while armed, later manager_get/search phases establish it. Keep the IDs, timestamps and parent links intact.
 
 If capture_end is not yet present after 180 seconds, an event-loop stall may
 have delayed its callback. Do not restart just to produce the record. Report
@@ -159,6 +177,10 @@ missing records and current service responsiveness from passive evidence.
 
 ## Interpretation
 
+- `tool_call` wraps the actual tool execution. `tool_deadline` wraps the
+  original deadline without replacing it. `manager_context` includes lazy
+  loading and manager acquisition. `tool_query` includes retrieval and the
+  `visibility_filter` phase, which CLI-only tests may not exercise.
 - `startup_catchup` includes startup inspection; its return does NOT mean the
   detached sync finished. Follow the child `sync_admitted`/`sync_pass` IDs.
 - `sync_admitted` with reason watch/session-delta/session-startup-catchup
@@ -179,7 +201,7 @@ missing records and current service responsiveness from passive evidence.
   outside this profiler; missing samples are not proof those workers are idle.
 - CPU line numbers identify function starts, not sampled instructions. They
   refer to the IN-MEMORY instrumented V5 module. Use
-  GATEWAY-TRACE.diff to map manager locations; other dist modules are unchanged.
+  GATEWAY-TRACE.diff to map manager and tools locations; other dist modules are unchanged.
 - No database query counters are included. A long async phase alone cannot
   establish that SQL was idle or a database transaction was held.
 

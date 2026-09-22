@@ -6,7 +6,7 @@ const path = require('node:path');
 const {realpathSync} = require('node:fs');
 const { fileURLToPath } = require('node:url');
 const inspector = require('node:inspector');
-const PHASES = new Set(['manager_get','search','provider_init','sync_admitted','background_maintenance','sync_pass','startup_catchup','session_update','memory_files','session_files','prepare_entry','write_chunks','batch_embedding','query_embedding','provider_probe','bootstrap_probe','embedding_request','retry_sleep','fts','vector','generation_read_wait','generation_write_wait','generation_write_hold','workspace_operation','workspace_hold']);
+const PHASES = new Set(['tool_call','tool_deadline','tool_query','manager_context','visibility_filter','manager_get','search','provider_init','sync_admitted','background_maintenance','sync_pass','startup_catchup','session_update','memory_files','session_files','prepare_entry','write_chunks','batch_embedding','query_embedding','provider_probe','bootstrap_probe','embedding_request','retry_sleep','fts','vector','generation_read_wait','generation_write_wait','generation_write_hold','workspace_operation','workspace_hold']);
 const REASONS = new Set(['watch','interval','session-delta','session-startup-catchup','cli','search','session-start','retry','fallback']);
 function errorClass(err) {
   // Inspect locally; never emit messages, arbitrary codes or provider bodies.
@@ -76,11 +76,13 @@ function safeProfile(profile, packageDir) {
 function createRuntime(options = {}) {
   const durationMs = options.durationMs ?? 180000;
   const now = options.now ?? (() => performance.now());
-  const start = now(), context = new AsyncLocalStorage(), active = new Map();
+  let start = now();
+  const armedAt = start, context = new AsyncLocalStorage(), active = new Map();
+  let triggered = !options.searchTriggered, captureStarted = false, armTimer;
   let sequence=0, count=0, capped=false, stopped=false, finishing=false;
   const maxRecords = options.maxRecords ?? 2000;
   const sink = options.sink ?? (record => process.stderr.write('EMBER_GATEWAY_TRACE ' + JSON.stringify(record) + '\n'));
-  const live = () => !stopped && now()-start < durationMs;
+  const live = () => triggered && !stopped && now()-start < durationMs;
   function emit(record, force=false) {
     if (!force && !live()) return;
     if (!force && count >= maxRecords) {
@@ -121,7 +123,7 @@ function createRuntime(options = {}) {
   async function finish() {
     if (finishing || stopped) return;
     finishing=true; stopped=true;
-    clearTimeout(timer);clearInterval(ticks);delay?.disable();
+    clearTimeout(armTimer);clearTimeout(timer);clearInterval(ticks);delay?.disable();
     emit({event:'capture_end',active:[...active.values()],record_cap_reached:capped},true);
     if (session) {
       try {
@@ -134,6 +136,8 @@ function createRuntime(options = {}) {
   }
   const post=(method,params={})=>new Promise((resolve,reject)=>session.post(method,params,(err,result)=>err?reject(err):resolve(result)));
   async function startCapture() {
+    if (captureStarted || stopped) return;
+    captureStarted=true;
     emit({event:'capture_start',duration_ms:durationMs,max_records:maxRecords});
     // A local inspector session only: no TCP inspector port is opened.
     if (options.profile !== false) {
@@ -150,11 +154,26 @@ function createRuntime(options = {}) {
     },10000);ticks.unref();
     timer=setTimeout(()=>void finish(),Math.max(1,durationMs-(now()-start)));timer.unref();
   }
+  function arm() {
+    if (!options.searchTriggered || armTimer || stopped) return;
+    emit({event:'armed',duration_ms:options.armMs ?? 900000},true);
+    armTimer=setTimeout(()=>{
+      if (!triggered) {stopped=true;emit({event:'arm_expired'},true);}
+    },options.armMs ?? 900000);armTimer.unref();
+  }
+  async function captureSearch(run) {
+    if (!triggered && !stopped && now()-armedAt < (options.armMs ?? 900000)) {
+      triggered=true;start=now();cpu=process.cpuUsage();wall=start;
+      clearTimeout(armTimer);
+      await startCapture();
+    }
+    return timed('tool_call',run);
+  }
   function wrap(target, method, phase) {
     const original=target[method];
     if (typeof original!=='function') throw new Error('Ember gateway trace: missing fixed method');
     target[method]=function(...args){return timed(phase,()=>original.apply(this,args),args);};
   }
-  return {timed,wrap,emit,startCapture,finish};
+  return {timed,wrap,emit,startCapture,finish,arm,captureSearch};
 }
 module.exports={createRuntime,errorClass,safeProfile};
